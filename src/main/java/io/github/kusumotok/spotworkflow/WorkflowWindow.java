@@ -47,10 +47,11 @@ public final class WorkflowWindow extends JFrame {
     private final JButton btnReloadRoi       = new JButton("Reload from Disk");
 
     // ── Action buttons ────────────────────────────────────────────────────────
-    private final JButton btnMakeRoi    = new JButton("Make ROI");
-    private final JButton btnMeasure    = new JButton("Measure");
-    private final JButton btnRunAll     = new JButton("Make ROI & Measure");
-    private final JButton btnOpenResult = new JButton("Open Result Folder…");
+    private final JButton btnMakeRoi      = new JButton("Make ROI");
+    private final JButton btnMeasure      = new JButton("Measure");
+    private final JButton btnRunAll       = new JButton("Make ROI & Measure");
+    private final JButton btnLoadResult   = new JButton("Load Result…");
+    private final JButton btnShowInFinder = new JButton("Show in Explorer");
 
     // ── Status ────────────────────────────────────────────────────────────────
     private final JLabel statusLabel = new JLabel("Ready");
@@ -129,12 +130,14 @@ public final class WorkflowWindow extends JFrame {
         buttons.add(btnMeasure);
         buttons.add(btnRunAll);
         buttons.add(Box.createHorizontalStrut(12));
-        buttons.add(btnOpenResult);
+        buttons.add(btnLoadResult);
+        buttons.add(btnShowInFinder);
 
-        btnMakeRoi.addActionListener(e    -> cmdMakeRoi());
-        btnMeasure.addActionListener(e    -> cmdMeasure());
-        btnRunAll.addActionListener(e     -> cmdRunAll());
-        btnOpenResult.addActionListener(e -> cmdOpenResultFolder());
+        btnMakeRoi.addActionListener(e      -> cmdMakeRoi());
+        btnMeasure.addActionListener(e      -> cmdMeasure());
+        btnRunAll.addActionListener(e       -> cmdRunAll());
+        btnLoadResult.addActionListener(e   -> cmdLoadResultFolder());
+        btnShowInFinder.addActionListener(e -> cmdShowInFinder());
 
         segmentationTab.btnApply.addActionListener(e -> cmdPreview());
         segmentationTab.btnClearPreview.addActionListener(e -> cmdClearPreview());
@@ -204,7 +207,8 @@ public final class WorkflowWindow extends JFrame {
         btnMakeRoi.setEnabled(!busy && hasBound);
         btnMeasure.setEnabled(!busy && hasResult);
         btnRunAll.setEnabled(!busy  && hasBound);
-        btnOpenResult.setEnabled(!busy);
+        btnLoadResult.setEnabled(!busy);
+        btnShowInFinder.setEnabled(!busy && hasResult);
         btnReloadRoi.setEnabled(!busy && hasResult);
         segmentationTab.btnApply.setEnabled(!busy && hasBound);
         segmentationTab.btnClearPreview.setEnabled(hasBound);
@@ -273,11 +277,11 @@ public final class WorkflowWindow extends JFrame {
         runSegmentation(image, segmentationTab.getParams(), baseDir, true);
     }
 
-    private void cmdOpenResultFolder() {
+    private void cmdLoadResultFolder() {
         if (!roiEditCtrl.confirmReplaceIfNeeded()) return;
 
         JFileChooser chooser = new JFileChooser();
-        chooser.setDialogTitle("Open Result Folder");
+        chooser.setDialogTitle("Load Result Folder");
         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
         if (controller.getSession().getResultFolder() != null) {
             chooser.setCurrentDirectory(
@@ -298,6 +302,16 @@ public final class WorkflowWindow extends JFrame {
                 setStatus(getStatus() + "  |  Could not read parameters.txt");
             }
             tabs.setSelectedIndex(0);
+        }
+    }
+
+    private void cmdShowInFinder() {
+        Path folder = controller.getSession().getResultFolder();
+        if (folder == null) return;
+        try {
+            java.awt.Desktop.getDesktop().open(folder.toFile());
+        } catch (Exception e) {
+            setStatus("Could not open folder: " + e.getMessage());
         }
     }
 
