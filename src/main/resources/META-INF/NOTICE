@@ -1,0 +1,18 @@
+Spot Quantifier Workflow for Fiji
+Copyright (c) 2026 kusumotok
+
+This plugin provides a unified segmentation / ROI editing / measurement workflow
+built on top of ROI Explorer and Fiji Segmentation Suite.
+
+Runtime dependencies:
+  - ROI Explorer (ROI_Explorer_Fiji.jar) — ROI management and measurement engine
+  - MorphoLibJ (MorphoLibJ_.jar) — 3D watershed backend
+  - ImageJ/Fiji runtime
+
+The segmentation core (jp.yourorg.fiji_maxima_based_segmenter) is bundled
+in this JAR and extracted from Fiji Segmentation Suite by kusumotok.
+
+These dependencies are provided separately and are not bundled in this JAR.
+See pom.xml for version details.
+
+License: MIT — see top-level LICENSE file.
