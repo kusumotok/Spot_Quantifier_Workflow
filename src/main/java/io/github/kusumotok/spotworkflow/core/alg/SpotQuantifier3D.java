@@ -25,32 +25,6 @@ import java.util.function.BooleanSupplier;
 public class SpotQuantifier3D {
 
     /**
-     * Run CC labeling and return the full (unfiltered) result.
-     *
-     * @param imp    Input 3D stack (16-bit)
-     * @param params Quantifier parameters
-     * @return CcResult3D with full label image and voxel-count map
-     */
-    public static CcResult3D computeCC(ImagePlus imp, QuantifierParams params) {
-        return computeCC(imp, params, null);
-    }
-
-    public static CcResult3D computeCC(ImagePlus imp, QuantifierParams params, BooleanSupplier shouldCancel) {
-        ImagePlus working = imp;
-        if (params.gaussianBlur) {
-            working = imp.duplicate();
-            working.setTitle(imp.getShortTitle() + "-blurred");
-            IJ.run(working, "Gaussian Blur 3D...",
-                "x=" + params.gaussXY + " y=" + params.gaussXY + " z=" + params.gaussZ);
-        }
-        try {
-            return computeCCFromBlurred(working, params.threshold, params, shouldCancel);
-        } finally {
-            if (params.gaussianBlur && working != imp) working.close();
-        }
-    }
-
-    /**
      * Run CC labeling on an already-blurred (or raw) image at the given threshold.
      * Gaussian blur is NOT applied; the caller manages image lifecycle.
      * Used by SeededQuantifier3D to reuse a single blurred copy across two threshold passes.

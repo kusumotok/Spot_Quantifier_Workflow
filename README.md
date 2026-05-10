@@ -14,27 +14,42 @@ Fiji plugin that connects segmentation, ROI editing, and measurement in a single
 
 以下の JAR が Fiji の `plugins/` に必要。
 
-| JAR | 用途 |
-|---|---|
-| `ROI_Explorer_Fiji.jar` | ROI 管理・編集・計測エンジン（埋め込み） |
-| `MorphoLibJ_.jar` | 3D watershed バックエンド（Fiji update site から入手） |
+| JAR | バージョン | 入手先 |
+|---|---|---|
+| `ROI_Explorer_Fiji.jar` | 0.1.0-SNAPSHOT | 下記「ROI Explorer のビルド」参照 |
+| `MorphoLibJ_.jar` | 1.6.2 | Fiji > Help > Update > Manage update sites > IJPB-plugins |
 
 セグメンテーションコアはこのプロジェクトに同梱されており、別途配布不要。
+ImageJ 本体は 1.54p 以降を前提とする。
 
 ## Build
 
+### 事前準備: ROI Explorer をローカル Maven リポジトリにインストール
+
 ```bash
-# 1. ROI Explorer を local Maven repo にインストール
-cd ../ROI_Explorer
+git clone https://github.com/kusumotok/ROI_Explorer.git
+cd ROI_Explorer
 mvn install -DskipTests
-
-# 2. ビルド
-cd ../SpotQuantifierWorkflow
-mvn package -DskipTests
-
-# 3. Fiji にインストール
-cp target/Spot_Quantifier_Workflow.jar <Fiji.app>/plugins/
 ```
+
+### SpotQuantifierWorkflow のビルド
+
+```bash
+cd ../Spot_Quantifier_Workflow
+mvn package -DskipTests
+```
+
+### Fiji へのインストール
+
+```bash
+# 両 JAR を Fiji の plugins/ にコピー
+cp target/Spot_Quantifier_Workflow.jar  <Fiji.app>/plugins/
+cp ~/.m2/repository/io/github/kusumotok/roi-explorer-fiji/0.1.0-SNAPSHOT/roi-explorer-fiji-0.1.0-SNAPSHOT.jar \
+   <Fiji.app>/plugins/ROI_Explorer_Fiji.jar
+```
+
+> Windows の場合、Maven ローカルリポジトリのデフォルトパスは
+> `%USERPROFILE%\.m2\repository\io\github\kusumotok\roi-explorer-fiji\0.1.0-SNAPSHOT\`
 
 ## Result Folder Structure
 

@@ -25,7 +25,7 @@ public final class SegmentationParams {
 
     public QuantifierParams toQuantifierParams() {
         return new QuantifierParams(
-            0, minVolUm3, maxVolUm3,
+            minVolUm3, maxVolUm3,
             gaussianBlur, gaussXY, gaussZ,
             connectivity, fillHoles, areaConflictMode);
     }

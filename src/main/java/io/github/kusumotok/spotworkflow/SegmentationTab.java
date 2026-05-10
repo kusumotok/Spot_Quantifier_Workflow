@@ -67,7 +67,8 @@ public final class SegmentationTab extends JPanel {
     private final JTextField areaField        = numField("100");
 
     // ── 3D options ─────────────────────────────────────────────────────
-    private final JComboBox<Integer> connectivityBox  = new JComboBox<>(new Integer[]{6, 18, 26});
+    // MorphoLibJ componentsLabeling は 6 / 26 のみサポート (18 は IllegalArgumentException)
+    private final JComboBox<Integer> connectivityBox  = new JComboBox<>(new Integer[]{6, 26});
     private final JCheckBox          fillHolesCheck   = new JCheckBox("Fill holes");
     private final JRadioButton       conflictMaxBtn   = new JRadioButton("Max overlap", true);
     private final JRadioButton       conflictSplitBtn = new JRadioButton("Split");
@@ -107,6 +108,7 @@ public final class SegmentationTab extends JPanel {
     private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
     private final AtomicInteger previewGen      = new AtomicInteger();
     private ImageListener zWatcher;
+    private boolean tabActive = true; // false = 他タブ表示中。Z-watcher を抑制する
 
     // ── Histogram listener ─────────────────────────────────────────────
     private final HistogramPanel.ThresholdListener histListener = (tBg, tFg) -> {
@@ -451,8 +453,8 @@ public final class SegmentationTab extends JPanel {
             }
             @Override
             protected void done() {
+                if (previewGen.get() != gen) { setPreviewBusy(false); return; }
                 setPreviewBusy(false);
-                if (previewGen.get() != gen) return;
                 try {
                     SeededQuantifier3D.SeededResult result = get();
                     if (result == null) {
@@ -468,7 +470,8 @@ public final class SegmentationTab extends JPanel {
                 } catch (CancellationException e) {
                     previewCountLabel.setText("Cancelled.");
                 } catch (Exception e) {
-                    previewCountLabel.setText("Error: " + e.getCause().getMessage());
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    previewCountLabel.setText("Error: " + cause.getMessage());
                 }
             }
         }.execute();
@@ -546,6 +549,11 @@ public final class SegmentationTab extends JPanel {
         previewGen.incrementAndGet();
     }
 
+    /** Segmentation タブの表示状態を通知する。非表示中は Z-watcher によるオーバーレイ再描画を抑制する。 */
+    public void setTabActive(boolean active) {
+        tabActive = active;
+    }
+
     /** Clears overlay on the image and Z-proj, but keeps the cache. */
     public void clearOverlayOnly() {
         clearPreviewOverlay();
@@ -588,7 +596,7 @@ public final class SegmentationTab extends JPanel {
     }
 
     private void updatePreviewForZChange() {
-        if (modeOff.isSelected() || cachedResult == null) return;
+        if (!tabActive || modeOff.isSelected() || cachedResult == null) return;
         SwingUtilities.invokeLater(() -> renderPreview(currentZPlane()));
     }
 

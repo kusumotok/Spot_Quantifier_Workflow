@@ -20,13 +20,17 @@ public final class RoiEditTabController {
         this.panel = panel;
     }
 
-    public void openResult(Path resultFolder, ImagePlus boundImage) {
+    /**
+     * Opens a result folder into the ROI Edit tab.
+     * Returns true on success, false if the folder is invalid (dialog shown, session unchanged).
+     */
+    public boolean openResult(Path resultFolder, ImagePlus boundImage) {
         Path roiRoot = resultFolder.resolve("rois");
         if (!Files.isDirectory(roiRoot)) {
             JOptionPane.showMessageDialog(window,
                 "The selected folder does not contain a 'rois' subdirectory.\n" + resultFolder,
                 "Invalid Result Folder", JOptionPane.ERROR_MESSAGE);
-            return;
+            return false;
         }
 
         controller.getSession().setResultFolder(resultFolder);
@@ -44,6 +48,7 @@ public final class RoiEditTabController {
         controller.setState(WorkflowController.State.READY);
         window.setStatus("ROI loaded (" + resultFolder.getFileName() + ").");
         window.refreshRoiEditTab();
+        return true;
     }
 
     public boolean confirmReplaceIfNeeded() {

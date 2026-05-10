@@ -179,9 +179,14 @@ public final class WorkflowWindow extends JFrame {
 
         tabs.addChangeListener(e -> {
             int current = tabs.getSelectedIndex();
-            // Leave Segmentation → clear preview overlay (cache kept; ROI Edit onwards doesn't need it)
+            // Leave Segmentation → clear overlay, suspend Z-watcher (cache kept)
             if (previousTabIndex == 0 && current != 0) {
+                segmentationTab.setTabActive(false);
                 segmentationTab.clearOverlayOnly();
+            }
+            // Return to Segmentation → re-enable Z-watcher
+            if (current == 0 && previousTabIndex != 0) {
+                segmentationTab.setTabActive(true);
             }
             // Leave ROI Edit → clean up ROI Explorer preview overlays
             if (previousTabIndex == 1 && current != 1) {
@@ -283,9 +288,9 @@ public final class WorkflowWindow extends JFrame {
         JFileChooser chooser = new JFileChooser();
         chooser.setDialogTitle("Load Result Folder");
         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-        if (controller.getSession().getResultFolder() != null) {
-            chooser.setCurrentDirectory(
-                controller.getSession().getResultFolder().getParent().toFile());
+        Path prevFolder = controller.getSession().getResultFolder();
+        if (prevFolder != null && prevFolder.getParent() != null) {
+            chooser.setCurrentDirectory(prevFolder.getParent().toFile());
         }
         if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
 
@@ -301,7 +306,6 @@ public final class WorkflowWindow extends JFrame {
             } catch (Exception ex) {
                 setStatus(getStatus() + "  |  Could not read parameters.txt");
             }
-            tabs.setSelectedIndex(0);
         }
     }
 
@@ -337,7 +341,11 @@ public final class WorkflowWindow extends JFrame {
             @Override protected void done() {
                 try {
                     Path resultFolder = get();
-                    roiEditCtrl.openResult(resultFolder, image);
+                    if (!roiEditCtrl.openResult(resultFolder, image)) {
+                        controller.setState(WorkflowController.State.IDLE);
+                        setStatus("Error: result folder is missing 'rois' subdirectory.");
+                        return;
+                    }
                     if (measureAfter) {
                         tabs.setSelectedIndex(2);
                         runMeasurement(resultFolder);

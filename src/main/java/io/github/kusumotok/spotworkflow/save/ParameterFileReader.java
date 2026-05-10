@@ -1,5 +1,6 @@
 package io.github.kusumotok.spotworkflow.save;
 
+import ij.IJ;
 import io.github.kusumotok.spotworkflow.core.alg.QuantifierParams;
 
 import java.io.IOException;
@@ -40,10 +41,14 @@ public final class ParameterFileReader {
             p.gaussXY = parseDouble(map.get("GAUSS_XY"), p.gaussXY);
         if (map.containsKey("GAUSS_Z"))
             p.gaussZ = parseDouble(map.get("GAUSS_Z"), p.gaussZ);
-        if (map.containsKey("AREA_CONFLICT_MODE"))
-            p.areaConflictMode = "split".equalsIgnoreCase(map.get("AREA_CONFLICT_MODE"))
-                ? QuantifierParams.AreaConflictMode.SPLIT
-                : QuantifierParams.AreaConflictMode.MAX_OVERLAP;
+        if (map.containsKey("AREA_CONFLICT_MODE")) {
+            String raw = map.get("AREA_CONFLICT_MODE");
+            if ("split".equalsIgnoreCase(raw)) {
+                p.areaConflictMode = QuantifierParams.AreaConflictMode.SPLIT;
+            } else if (!"max_overlap".equalsIgnoreCase(raw)) {
+                IJ.log("[SpotQuantifier] WARN: unknown AREA_CONFLICT_MODE='" + raw + "', using MAX_OVERLAP");
+            }
+        }
         if (map.containsKey("SAVE_MODE")) {
             try { p.saveMode = SaveMode.valueOf(map.get("SAVE_MODE").toUpperCase()); }
             catch (IllegalArgumentException ignored) {}

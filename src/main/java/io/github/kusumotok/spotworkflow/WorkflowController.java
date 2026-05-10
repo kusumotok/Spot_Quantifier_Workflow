@@ -1,7 +1,7 @@
 package io.github.kusumotok.spotworkflow;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class WorkflowController {
 
@@ -16,7 +16,7 @@ public final class WorkflowController {
 
     private State state = State.IDLE;
     private final WorkflowSession session = new WorkflowSession();
-    private final List<Runnable> stateListeners = new ArrayList<>();
+    private final List<Runnable> stateListeners = new CopyOnWriteArrayList<>();
 
     public void addStateListener(Runnable listener) {
         stateListeners.add(listener);
