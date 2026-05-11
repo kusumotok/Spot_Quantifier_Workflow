@@ -10,11 +10,13 @@ import ij.process.ByteProcessor;
 import ij.process.ImageProcessor;
 
 import java.awt.Color;
+import java.awt.Rectangle;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.TreeSet;
+import java.util.TreeMap;
 
 public class RoiExporter3D {
 
@@ -104,36 +106,56 @@ public class RoiExporter3D {
             ? Math.min(nChannels, sourceChannel)
             : labelImage.getC());
 
-        // Find all unique labels (use getPixel to handle float/int properly)
-        TreeSet<Integer> labels = new TreeSet<>();
+        Map<Integer, Map<Integer, Rectangle>> bboxByLabelByZ =
+            new TreeMap<Integer, Map<Integer, Rectangle>>();
         for (int z = 1; z <= d; z++) {
             ImageProcessor ip = stack.getProcessor(z);
             for (int y = 0; y < h; y++) {
                 for (int x = 0; x < w; x++) {
                     int v = (int) Math.round(ip.getPixelValue(x, y));
-                    if (v > 0) labels.add(v);
+                    if (v <= 0) continue;
+                    Map<Integer, Rectangle> byZ = bboxByLabelByZ.get(v);
+                    if (byZ == null) {
+                        byZ = new HashMap<Integer, Rectangle>();
+                        bboxByLabelByZ.put(v, byZ);
+                    }
+                    Rectangle r = byZ.get(z);
+                    if (r == null) {
+                        byZ.put(z, new Rectangle(x, y, 1, 1));
+                    } else {
+                        r.add(x, y);
+                    }
                 }
             }
         }
 
-        if (labels.isEmpty()) {
+        if (bboxByLabelByZ.isEmpty()) {
             return java.util.Collections.emptyMap();
         }
 
         Map<Integer, List<Roi>> roisByLabel = new LinkedHashMap<Integer, List<Roi>>();
-        for (int label : labels) {
+        for (Map.Entry<Integer, Map<Integer, Rectangle>> labelEntry : bboxByLabelByZ.entrySet()) {
+            int label = labelEntry.getKey();
             List<Roi> rois = new ArrayList<Roi>();
-            for (int z = 1; z <= d; z++) {
+            for (Map.Entry<Integer, Rectangle> zEntry : new TreeMap<Integer, Rectangle>(labelEntry.getValue()).entrySet()) {
+                int z = zEntry.getKey();
+                Rectangle bbox = zEntry.getValue();
+                int x0 = Math.max(0, bbox.x - 1);
+                int y0 = Math.max(0, bbox.y - 1);
+                int x1 = Math.min(w - 1, bbox.x + bbox.width);
+                int y1 = Math.min(h - 1, bbox.y + bbox.height);
+                int bw = x1 - x0 + 1;
+                int bh = y1 - y0 + 1;
+
                 ImageProcessor ip = stack.getProcessor(z);
-                ByteProcessor bp = new ByteProcessor(w, h);
+                ByteProcessor bp = new ByteProcessor(bw, bh);
                 byte[] pixels = (byte[]) bp.getPixels();
                 boolean hasPixel = false;
-                for (int y = 0; y < h; y++) {
-                    for (int x = 0; x < w; x++) {
-                        int idx = y * w + x;
+                for (int y = y0; y <= y1; y++) {
+                    for (int x = x0; x <= x1; x++) {
                         int v = (int) Math.round(ip.getPixelValue(x, y));
                         if (v == label) {
-                            pixels[idx] = (byte) 255;
+                            pixels[(y - y0) * bw + (x - x0)] = (byte) 255;
                             hasPixel = true;
                         }
                     }
@@ -144,6 +166,7 @@ public class RoiExporter3D {
                 ImagePlus mask = new ImagePlus("mask", bp);
                 Roi roi = ThresholdToSelection.run(mask);
                 if (roi == null) continue;
+                roi.setLocation(roi.getXBase() + x0, roi.getYBase() + y0);
 
                 if (nChannels > 1) roi.setPosition(channel, z, 1);
                 else               roi.setPosition(z);

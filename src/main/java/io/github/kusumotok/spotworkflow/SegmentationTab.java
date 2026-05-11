@@ -6,16 +6,15 @@ import ij.ImagePlus;
 import ij.WindowManager;
 import ij.gui.Overlay;
 import ij.gui.Roi;
+import ij.gui.ShapeRoi;
 import ij.measure.Calibration;
 import ij.plugin.Duplicator;
-import ij.plugin.filter.ThresholdToSelection;
-import ij.process.ByteProcessor;
-import ij.process.ImageProcessor;
 import io.github.kusumotok.spotworkflow.save.SaveMode;
 import io.github.kusumotok.spotworkflow.save.SegmentationParams;
 import io.github.kusumotok.spotworkflow.core.alg.QuantifierParams;
 import io.github.kusumotok.spotworkflow.core.alg.SeededQuantifier3D;
 import io.github.kusumotok.spotworkflow.core.model.ThresholdModel;
+import io.github.kusumotok.spotworkflow.core.roi.RoiExporter3D;
 import io.github.kusumotok.spotworkflow.core.ui.HistogramPanel;
 import io.github.kusumotok.spotworkflow.core.util.SeededSpotQuantifier3DImageSupport;
 
@@ -103,12 +102,26 @@ public final class SegmentationTab extends JPanel {
     private boolean syncing = false;
 
     // Preview cache
-    private SeededQuantifier3D.SeededResult cachedResult;
-    private String                          cachedKey;
+    private String cachedKey;
+    private Map<Integer, List<Roi>> cachedFinalRoisByZ;
+    private Map<Integer, List<Roi>> cachedSeedRoisByZ;
+    private List<Roi> cachedZProjResultRois;
+    private List<Roi> cachedZProjSeedRois;
     private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
     private final AtomicInteger previewGen      = new AtomicInteger();
     private ImageListener zWatcher;
     private boolean tabActive = true; // false = 他タブ表示中。Z-watcher を抑制する
+
+    private static final class PreviewResult {
+        final Map<Integer, List<Roi>> finalSliceRois;
+        final Map<Integer, List<Roi>> seedSliceRois;
+
+        PreviewResult(Map<Integer, List<Roi>> finalSliceRois,
+                      Map<Integer, List<Roi>> seedSliceRois) {
+            this.finalSliceRois = finalSliceRois;
+            this.seedSliceRois = seedSliceRois;
+        }
+    }
 
     // ── Histogram listener ─────────────────────────────────────────────
     private final HistogramPanel.ThresholdListener histListener = (tBg, tFg) -> {
@@ -377,23 +390,43 @@ public final class SegmentationTab extends JPanel {
         });
         modeRoi.addActionListener(e -> {
             updateEnabled();
-            if (cachedResult != null) renderPreview(currentZPlane());
+            if (cachedFinalRoisByZ != null) {
+                renderPreview(currentZPlane());
+                renderSelectedZProjOverlay();
+            }
             else if (currentImage != null) previewCountLabel.setText("Press Apply to update");
         });
         modeRoiLight.addActionListener(e -> {
             updateEnabled();
-            if (cachedResult != null) renderPreview(currentZPlane());
+            if (cachedFinalRoisByZ != null) {
+                renderPreview(currentZPlane());
+                renderSelectedZProjOverlay();
+            }
             else if (currentImage != null) previewCountLabel.setText("Press Apply to update");
         });
 
         // Color pickers
         btnSeedColor.addActionListener(e -> {
             Color c = JColorChooser.showDialog(this, "Seed color", seedColor);
-            if (c != null) { seedColor = c; btnSeedColor.setBackground(c); if (cachedResult != null) renderPreview(currentZPlane()); }
+            if (c != null) {
+                seedColor = c;
+                btnSeedColor.setBackground(c);
+                if (cachedFinalRoisByZ != null) {
+                    renderPreview(currentZPlane());
+                    renderSelectedZProjOverlay();
+                }
+            }
         });
         btnResultColor.addActionListener(e -> {
             Color c = JColorChooser.showDialog(this, "Result color", resultColor);
-            if (c != null) { resultColor = c; btnResultColor.setBackground(c); if (cachedResult != null) renderPreview(currentZPlane()); }
+            if (c != null) {
+                resultColor = c;
+                btnResultColor.setBackground(c);
+                if (cachedFinalRoisByZ != null) {
+                    renderPreview(currentZPlane());
+                    renderSelectedZProjOverlay();
+                }
+            }
         });
 
         // Preview buttons
@@ -405,8 +438,7 @@ public final class SegmentationTab extends JPanel {
     // ── Param change ───────────────────────────────────────────────────
 
     private void onParamsChanged() {
-        cachedResult = null;
-        cachedKey    = null;
+        clearPreviewCache();
         if (!modeOff.isSelected()) {
             previewCountLabel.setText("Press Apply to update");
         }
@@ -421,8 +453,9 @@ public final class SegmentationTab extends JPanel {
         String key = makeKey(params);
 
         // Cache hit: just re-render current Z
-        if (cachedResult != null && key.equals(cachedKey)) {
+        if (cachedFinalRoisByZ != null && key.equals(cachedKey)) {
             renderPreview(currentZPlane());
+            renderSelectedZProjOverlay();
             return;
         }
 
@@ -439,14 +472,26 @@ public final class SegmentationTab extends JPanel {
         final ImagePlus channelImg  = extractChannel(currentImage, params.channel);
         final boolean   ownsChannel = channelImg != currentImage;
 
-        new SwingWorker<SeededQuantifier3D.SeededResult, Void>() {
+        new SwingWorker<PreviewResult, Void>() {
             @Override
-            protected SeededQuantifier3D.SeededResult doInBackground() {
+            protected PreviewResult doInBackground() {
                 try {
-                    return SeededQuantifier3D.compute(
+                    SeededQuantifier3D.SeededResult seeded = SeededQuantifier3D.compute(
                         channelImg, params.areaThreshold, params.seedThreshold,
                         params.toQuantifierParams(), vw * vh * vd, params.areaEnabled,
                         null, cancelRequested::get);
+                    if (seeded == null || seeded.finalSeg == null || seeded.finalSeg.labelImage == null) {
+                        return null;
+                    }
+                    RoiExporter3D exporter = new RoiExporter3D();
+                    Map<Integer, List<Roi>> finalRois = exporter.exportToRoiListsByLabel(
+                        seeded.finalSeg.labelImage, null, currentImage, params.channel);
+                    Map<Integer, List<Roi>> seedRois = null;
+                    if (params.areaEnabled && seeded.seedSeg != null && seeded.seedSeg.labelImage != null) {
+                        seedRois = exporter.exportToRoiListsByLabel(
+                            seeded.seedSeg.labelImage, null, currentImage, params.channel);
+                    }
+                    return new PreviewResult(finalRois, seedRois);
                 } finally {
                     if (ownsChannel) channelImg.flush();
                 }
@@ -456,16 +501,19 @@ public final class SegmentationTab extends JPanel {
                 if (previewGen.get() != gen) { setPreviewBusy(false); return; }
                 setPreviewBusy(false);
                 try {
-                    SeededQuantifier3D.SeededResult result = get();
-                    if (result == null) {
+                    PreviewResult result = get();
+                    if (result == null || result.finalSliceRois == null || result.finalSliceRois.isEmpty()) {
                         previewCountLabel.setText("No spots found.");
                         return;
                     }
-                    cachedResult = result;
-                    cachedKey    = key;
-                    int z = currentZPlane();
-                    renderPreview(z);
-                    int n = SeededSpotQuantifier3DImageSupport.countLabels(result.finalSeg);
+                    cachedFinalRoisByZ = organizeByZ(result.finalSliceRois);
+                    cachedSeedRoisByZ = result.seedSliceRois != null ? organizeByZ(result.seedSliceRois) : null;
+                    cachedZProjResultRois = computeZProjRois(result.finalSliceRois);
+                    cachedZProjSeedRois = result.seedSliceRois != null ? computeZProjRois(result.seedSliceRois) : null;
+                    cachedKey = key;
+                    renderPreview(currentZPlane());
+                    renderSelectedZProjOverlay();
+                    int n = result.finalSliceRois.size();
                     previewCountLabel.setText(n + " spot" + (n != 1 ? "s" : ""));
                 } catch (CancellationException e) {
                     previewCountLabel.setText("Cancelled.");
@@ -480,66 +528,49 @@ public final class SegmentationTab extends JPanel {
     // ── Preview: render current Z ──────────────────────────────────────
 
     private void renderPreview(int zPlane) {
-        if (cachedResult == null || currentImage == null || modeOff.isSelected()) return;
-        if (cachedResult.finalSeg == null || cachedResult.finalSeg.labelImage == null) return;
-        int nZ = cachedResult.finalSeg.labelImage.getNSlices();
-        if (zPlane < 1 || zPlane > nZ) return;
+        if (!tabActive || cachedFinalRoisByZ == null || currentImage == null || modeOff.isSelected()) return;
 
         Overlay overlay = new Overlay();
-        ImageProcessor finalIp = cachedResult.finalSeg.labelImage.getStack().getProcessor(zPlane);
-        addLabelOutlines(finalIp, resultColor, overlay);
-
-        if (areaEnabledCheck.isSelected()
-                && cachedResult.seedSeg != null
-                && cachedResult.seedSeg.labelImage != null
-                && zPlane <= cachedResult.seedSeg.labelImage.getNSlices()) {
-            ImageProcessor seedIp = cachedResult.seedSeg.labelImage.getStack().getProcessor(zPlane);
-            addLabelOutlines(seedIp, seedColor, overlay);
+        addRoisToOverlay(overlay, cachedFinalRoisByZ.get(zPlane), resultColor);
+        if (areaEnabledCheck.isSelected() && cachedSeedRoisByZ != null) {
+            addRoisToOverlay(overlay, cachedSeedRoisByZ.get(zPlane), seedColor);
         }
 
         currentImage.setOverlay(overlay);
         currentImage.updateAndDraw();
-
-        // Z-proj overlay
-        ImagePlus zp = getZProjImp();
-        if (zp != null) renderZProjOverlay(zp);
     }
 
     private void renderZProjOverlay(ImagePlus zp) {
-        if (cachedResult == null || cachedResult.finalSeg == null) return;
+        if (zp == null || cachedZProjResultRois == null) return;
         Overlay overlay = new Overlay();
 
         if (modeRoiLight.isSelected()) {
-            // Light mode: use projected type map → single ROI per type
-            int w = cachedResult.finalSeg.labelImage.getWidth();
-            int h = cachedResult.finalSeg.labelImage.getHeight();
-            int[] typeMap = SeededSpotQuantifier3DImageSupport.buildProjectedPreviewTypeMap(
-                cachedResult.finalSeg.labelImage,
-                (areaEnabledCheck.isSelected() && cachedResult.seedSeg != null)
-                    ? cachedResult.seedSeg.labelImage : null,
-                areaEnabledCheck.isSelected(),
-                seedSlider.getValue() >= areaSlider.getValue(), null);
-            Roi resultRoi = SeededSpotQuantifier3DImageSupport.buildProjectedTypeRoi(typeMap, w, h, 2, "result", null);
-            if (resultRoi != null) { resultRoi.setStrokeColor(resultColor); overlay.add(resultRoi); }
-            if (areaEnabledCheck.isSelected() && cachedResult.seedSeg != null) {
-                Roi seedRoi = SeededSpotQuantifier3DImageSupport.buildProjectedTypeRoi(typeMap, w, h, 1, "seed", null);
-                if (seedRoi != null) { seedRoi.setStrokeColor(seedColor); overlay.add(seedRoi); }
+            ShapeRoi merged = mergeAll(cachedZProjResultRois);
+            if (merged != null) {
+                merged.setStrokeColor(resultColor);
+                overlay.add(merged);
+            }
+            if (areaEnabledCheck.isSelected() && cachedZProjSeedRois != null) {
+                ShapeRoi mergedSeed = mergeAll(cachedZProjSeedRois);
+                if (mergedSeed != null) {
+                    mergedSeed.setStrokeColor(seedColor);
+                    overlay.add(mergedSeed);
+                }
             }
         } else {
-            // ROI mode: full Z-projected union ROIs per label
-            List<Roi> resultRois = SeededSpotQuantifier3DImageSupport.buildLabelUnionRois(
-                cachedResult.finalSeg.labelImage, "result", null);
-            for (Roi r : resultRois) { r.setStrokeColor(resultColor); overlay.add(r); }
-            if (areaEnabledCheck.isSelected() && cachedResult.seedSeg != null
-                    && cachedResult.seedSeg.labelImage != null) {
-                List<Roi> seedRois = SeededSpotQuantifier3DImageSupport.buildLabelUnionRois(
-                    cachedResult.seedSeg.labelImage, "seed", null);
-                for (Roi r : seedRois) { r.setStrokeColor(seedColor); overlay.add(r); }
+            addRoisToOverlay(overlay, cachedZProjResultRois, resultColor);
+            if (areaEnabledCheck.isSelected() && cachedZProjSeedRois != null) {
+                addRoisToOverlay(overlay, cachedZProjSeedRois, seedColor);
             }
         }
 
         zp.setOverlay(overlay);
         zp.updateAndDraw();
+    }
+
+    private void renderSelectedZProjOverlay() {
+        ImagePlus zp = getZProjImp();
+        if (zp != null) renderZProjOverlay(zp);
     }
 
     // ── Preview: cancel / clear ────────────────────────────────────────
@@ -563,8 +594,7 @@ public final class SegmentationTab extends JPanel {
     public void clearPreview() {
         cancelPreview();
         clearPreviewOverlay();
-        cachedResult = null;
-        cachedKey    = null;
+        clearPreviewCache();
         previewCountLabel.setText("");
     }
 
@@ -596,7 +626,7 @@ public final class SegmentationTab extends JPanel {
     }
 
     private void updatePreviewForZChange() {
-        if (!tabActive || modeOff.isSelected() || cachedResult == null) return;
+        if (!tabActive || modeOff.isSelected() || cachedFinalRoisByZ == null) return;
         SwingUtilities.invokeLater(() -> renderPreview(currentZPlane()));
     }
 
@@ -614,6 +644,7 @@ public final class SegmentationTab extends JPanel {
             zprojSyncing = true;
             zprojCombo.setSelectedItem(result.getTitle());
             zprojSyncing = false;
+            renderSelectedZProjOverlay();
         }
     }
 
@@ -622,6 +653,7 @@ public final class SegmentationTab extends JPanel {
         if (selected == null || ZPROJ_NONE.equals(selected)) return;
         ImagePlus zp = WindowManager.getImage(selected);
         if (zp != null && zp.getWindow() != null) zp.getWindow().toFront();
+        if (zp != null) renderZProjOverlay(zp);
     }
 
     void refreshZProjCombo() {
@@ -679,8 +711,7 @@ public final class SegmentationTab extends JPanel {
         cancelRequested.set(true);
         previewGen.incrementAndGet();
         clearPreviewOverlay();
-        cachedResult = null;
-        cachedKey    = null;
+        clearPreviewCache();
         if (zWatcher != null) {
             ImagePlus.removeImageListener(zWatcher);
             zWatcher = null;
@@ -846,37 +877,70 @@ public final class SegmentationTab extends JPanel {
             + ":" + p.areaConflictMode + ":" + p.channel;
     }
 
-    private static void addLabelOutlines(ImageProcessor labelIp, Color color, Overlay overlay) {
-        int w = labelIp.getWidth(), h = labelIp.getHeight();
-        java.util.HashMap<Integer, int[]> bboxMap = new java.util.HashMap<>();
-        for (int y = 0; y < h; y++) {
-            for (int x = 0; x < w; x++) {
-                int v = (int) Math.round(labelIp.getPixelValue(x, y));
-                if (v <= 0) continue;
-                int[] bb = bboxMap.get(v);
-                if (bb == null) bboxMap.put(v, new int[]{x, y, x, y});
-                else { if (x < bb[0]) bb[0] = x; if (y < bb[1]) bb[1] = y; if (x > bb[2]) bb[2] = x; if (y > bb[3]) bb[3] = y; }
+    private void clearPreviewCache() {
+        cachedKey = null;
+        cachedFinalRoisByZ = null;
+        cachedSeedRoisByZ = null;
+        cachedZProjResultRois = null;
+        cachedZProjSeedRois = null;
+    }
+
+    private static Map<Integer, List<Roi>> organizeByZ(Map<Integer, List<Roi>> roisByLabel) {
+        Map<Integer, List<Roi>> roisByZ = new HashMap<Integer, List<Roi>>();
+        for (List<Roi> rois : roisByLabel.values()) {
+            for (Roi roi : rois) {
+                int z = roi.getCPosition() > 0 ? roi.getZPosition() : roi.getPosition();
+                if (z <= 0) z = 1;
+                List<Roi> zRois = roisByZ.get(z);
+                if (zRois == null) {
+                    zRois = new ArrayList<Roi>();
+                    roisByZ.put(z, zRois);
+                }
+                zRois.add(roi);
             }
         }
-        for (java.util.Map.Entry<Integer, int[]> entry : bboxMap.entrySet()) {
-            int label = entry.getKey();
-            int[] bb = entry.getValue();
-            int x0 = Math.max(0, bb[0]-1), y0 = Math.max(0, bb[1]-1);
-            int x1 = Math.min(w-1, bb[2]+1), y1 = Math.min(h-1, bb[3]+1);
-            int bw = x1-x0+1, bh = y1-y0+1;
-            ByteProcessor bp = new ByteProcessor(bw, bh);
-            byte[] pixels = (byte[]) bp.getPixels();
-            for (int y = y0; y <= y1; y++)
-                for (int x = x0; x <= x1; x++)
-                    if ((int) Math.round(labelIp.getPixelValue(x, y)) == label)
-                        pixels[(y-y0)*bw+(x-x0)] = (byte)255;
-            bp.setThreshold(255, 255, ImageProcessor.NO_LUT_UPDATE);
-            Roi roi = ThresholdToSelection.run(new ImagePlus("", bp));
-            if (roi == null) continue;
-            roi.setLocation(roi.getXBase() + x0, roi.getYBase() + y0);
-            roi.setStrokeColor(color);
-            overlay.add(roi);
+        return roisByZ;
+    }
+
+    private static List<Roi> computeZProjRois(Map<Integer, List<Roi>> roisByLabel) {
+        List<Roi> out = new ArrayList<Roi>();
+        for (List<Roi> slices : roisByLabel.values()) {
+            ShapeRoi projected = null;
+            for (Roi roi : slices) {
+                ShapeRoi sr = new ShapeRoi(cloneForPreviewOverlay(roi));
+                projected = projected == null ? sr : projected.or(sr);
+            }
+            if (projected != null) {
+                projected.setPosition(0);
+                out.add(projected);
+            }
         }
+        return out;
+    }
+
+    private static void addRoisToOverlay(Overlay overlay, List<Roi> rois, Color color) {
+        if (rois == null) return;
+        for (Roi roi : rois) {
+            Roi viewRoi = cloneForPreviewOverlay(roi);
+            viewRoi.setStrokeColor(color);
+            overlay.add(viewRoi);
+        }
+    }
+
+    private static ShapeRoi mergeAll(List<Roi> rois) {
+        ShapeRoi merged = null;
+        for (Roi roi : rois) {
+            ShapeRoi sr = new ShapeRoi(cloneForPreviewOverlay(roi));
+            merged = merged == null ? sr : merged.or(sr);
+        }
+        if (merged != null) merged.setPosition(0);
+        return merged;
+    }
+
+    private static Roi cloneForPreviewOverlay(Roi roi) {
+        Roi clone = (Roi) roi.clone();
+        clone.setPosition(0);
+        return clone;
     }
 
     private static Set<Integer> currentImageIdSet() {
