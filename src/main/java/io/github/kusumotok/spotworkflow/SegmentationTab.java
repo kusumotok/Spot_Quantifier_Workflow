@@ -4,6 +4,7 @@ import ij.IJ;
 import ij.ImageListener;
 import ij.ImagePlus;
 import ij.WindowManager;
+import ij.gui.ImageCanvas;
 import ij.gui.Overlay;
 import ij.gui.Roi;
 import ij.gui.ShapeRoi;
@@ -23,6 +24,8 @@ import javax.swing.border.TitledBorder;
 import java.awt.*;
 import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.CancellationException;
@@ -35,6 +38,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  *   Channel / Z-proj → Histogram → Seed → Min/Max vol → Area → 3D options → Preview → Save
  */
 public final class SegmentationTab extends JPanel {
+    public enum Mode { SEED, AREA_RESULT }
+
+    private Mode mode = Mode.AREA_RESULT; // constructor で上書きされる
 
     // ── Image context ──────────────────────────────────────────────────
     private static final String ZPROJ_NONE = "None";
@@ -57,8 +63,12 @@ public final class SegmentationTab extends JPanel {
     // ── Volume filter ──────────────────────────────────────────────────
     private final JCheckBox  minVolCheck = new JCheckBox(volLabel("µm"), true);
     private final JTextField minVolField = numField("0.10");
-    private final JCheckBox  maxVolCheck = new JCheckBox(volLabel("µm"), false);
+    private final JSlider    minVolSlider = new JSlider(0, 1000, 1);
+    private final JCheckBox  maxVolCheck = new JCheckBox(maxVolLabel("µm"), false);
     private final JTextField maxVolField = numField("50.0");
+    private final JSlider    maxVolSlider = new JSlider(0, 1000, 500);
+    private double sizeSliderMinVolume = 0.0;
+    private double sizeSliderMaxVolume = 100.0;
 
     // ── Area threshold ─────────────────────────────────────────────────
     private final JCheckBox  areaEnabledCheck = new JCheckBox("Area enabled", true);
@@ -76,7 +86,7 @@ public final class SegmentationTab extends JPanel {
     private final JRadioButton modeOff      = new JRadioButton("Off", true);
     private final JRadioButton modeRoi      = new JRadioButton("ROI");
     private final JRadioButton modeRoiLight = new JRadioButton("ROI light");
-    private Color seedColor   = Color.decode("#AA00FF");   // purple
+    private Color seedColor   = Color.CYAN;
     private Color resultColor = Color.decode("#FFFF00");   // yellow
     private final JButton btnSeedColor   = colorSwatch(seedColor,   "Seed color");
     private final JButton btnResultColor = colorSwatch(resultColor, "Result color");
@@ -84,14 +94,22 @@ public final class SegmentationTab extends JPanel {
     final JButton btnClearPreview = new JButton("Clear");
     final JButton btnCancel       = new JButton("Cancel");
     final JLabel  previewCountLabel = new JLabel("");
+    private final JCheckBox  previewNoiseCheck  = new JCheckBox("Hide preview noise <", false);
+    private final JTextField previewNoiseField  = numField("0.0");
+    private final JSlider    previewNoiseSlider = new JSlider(0, 1000, 0);
+    final JButton btnMakeSeedRoi    = new JButton("Make / Update Seed ROI");
+    final JButton btnMakeResultRoi  = new JButton("Make Result ROI");
+    private final JButton btnManualInclude = new JButton("Manual Include");
+    private final JButton btnManualExclude = new JButton("Manual Exclude");
+    private final JButton btnManualClear   = new JButton("Clear Manual Picks");
 
     // ── Save ───────────────────────────────────────────────────────────
     private final JComboBox<SaveMode> saveModeBox =
         new JComboBox<>(new SaveMode[]{SaveMode.FOLDER, SaveMode.ZIP_FAST, SaveMode.ZIP_COMPRESSED});
-    private final JTextField resultPatternField = new JTextField("{name} result", 22);
+    private final JTextField resultPatternField = new JTextField("{name} result", 16);
     // Save-to: null = auto (follow image file directory); non-null = user-set fixed path
     private java.nio.file.Path saveBaseDir = null;
-    private final JTextField saveToDirDisplay = new JTextField(24);
+    private final JTextField saveToDirDisplay = new JTextField(16);
     private final JButton    btnSaveTo        = new JButton("Browse…");
     private final JButton    btnSaveToClear   = new JButton("✕");
     private final JLabel     saveToHintLabel  = new JLabel("");
@@ -107,19 +125,61 @@ public final class SegmentationTab extends JPanel {
     private Map<Integer, List<Roi>> cachedSeedRoisByZ;
     private List<Roi> cachedZProjResultRois;
     private List<Roi> cachedZProjSeedRois;
+    private String cachedSeedBaseKey;
+    private Map<Integer, List<Roi>> cachedSeedRawRoisByLabel;
+    private Map<Integer, List<Roi>> cachedSeedAcceptedRoisByLabel;
+    private Map<Integer, Long> cachedSeedVoxelCounts;
+    private double cachedSeedVoxelVolume = 1.0;
+    private final Set<Integer> manualIncludeLabels = new HashSet<Integer>();
+    private final Set<Integer> manualExcludeLabels = new HashSet<Integer>();
+    private ManualPickMode manualPickMode;
+    private MouseAdapter manualPickListener;
+    private final List<ImageCanvas> manualPickCanvases = new ArrayList<ImageCanvas>();
+    private Integer manualHoverLabel;
+    private boolean manualHoverOnZProj;
+    private static final Color MANUAL_HOVER_COLOR = Color.MAGENTA;
+    private final javax.swing.Timer sizeFilterDebounceTimer;
     private final AtomicBoolean cancelRequested = new AtomicBoolean(false);
     private final AtomicInteger previewGen      = new AtomicInteger();
     private ImageListener zWatcher;
-    private boolean tabActive = true; // false = 他タブ表示中。Z-watcher を抑制する
+    private boolean originalPreviewActive = true;
+    private boolean zprojPreviewActive = true;
+    private JPanel channelRow;
+    private JPanel seedThresholdSection;
+    private JPanel minVolRow;
+    private JPanel maxVolRow;
+    private JPanel sizeFilterGuardPanel;
+    private JPanel areaSection;
+    private JPanel threeDSection;
+    private JPanel previewSection;
+    private JPanel saveSection;
+    private JPanel manualSection;
+    private JPanel makeRoiSection;
+
+    private enum ManualPickMode { INCLUDE, EXCLUDE }
 
     private static final class PreviewResult {
         final Map<Integer, List<Roi>> finalSliceRois;
         final Map<Integer, List<Roi>> seedSliceRois;
+        final Map<Integer, List<Roi>> rawSeedRois;
+        final Map<Integer, Long> seedVoxelCounts;
+        final double voxelVolume;
 
         PreviewResult(Map<Integer, List<Roi>> finalSliceRois,
                       Map<Integer, List<Roi>> seedSliceRois) {
+            this(finalSliceRois, seedSliceRois, null, null, 1.0);
+        }
+
+        PreviewResult(Map<Integer, List<Roi>> finalSliceRois,
+                      Map<Integer, List<Roi>> seedSliceRois,
+                      Map<Integer, List<Roi>> rawSeedRois,
+                      Map<Integer, Long> seedVoxelCounts,
+                      double voxelVolume) {
             this.finalSliceRois = finalSliceRois;
             this.seedSliceRois = seedSliceRois;
+            this.rawSeedRois = rawSeedRois;
+            this.seedVoxelCounts = seedVoxelCounts;
+            this.voxelVolume = voxelVolume;
         }
     }
 
@@ -128,38 +188,69 @@ public final class SegmentationTab extends JPanel {
         if (model == null) return;
         int oldBg = model.getTBg(), oldFg = model.getTFg();
         syncing = true;
-        model.setTBg(tBg); model.setTFg(tFg);
-        areaSlider.setValue(tBg); areaField.setText(String.valueOf(tBg));
-        seedSlider.setValue(tFg); seedField.setText(String.valueOf(tFg));
+        // AREA_RESULT: area threshold (tBg) のみ更新。seedSlider への書き込みを防ぐ
+        // SEED:        seed threshold (tFg) のみ更新。areaSlider への書き込みを防ぐ
+        if (mode == Mode.AREA_RESULT) {
+            model.setTBg(tBg);
+            areaSlider.setValue(tBg); areaField.setText(String.valueOf(tBg));
+        } else {
+            model.setTFg(tFg);
+            seedSlider.setValue(tFg); seedField.setText(String.valueOf(tFg));
+        }
         syncing = false;
         if (histogramPanel != null) histogramPanel.repaintThresholdMarkers(oldBg, oldFg);
-        onParamsChanged();
+        onThresholdParamsChanged();
     };
 
     public SegmentationTab() {
+        this(Mode.AREA_RESULT);
+    }
+
+    public SegmentationTab(Mode mode) {
+        this.mode = mode;
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBorder(BorderFactory.createEmptyBorder(6, 6, 6, 6));
 
-        add(buildChannelRow());
+        channelRow = buildChannelRow();
+        seedThresholdSection = buildThreshRow("Seed threshold:", seedSlider, seedField);
+        minVolRow = buildVolRow(minVolCheck, minVolField);
+        maxVolRow = buildVolRow(maxVolCheck, maxVolField);
+        sizeFilterGuardPanel = buildManualResetGuardPanel();
+        areaSection = buildAreaSection();
+        threeDSection = buildThreeDSection();
+        previewSection = buildPreviewSection();
+        manualSection = buildManualSection();
+        makeRoiSection = buildMakeRoiSection();
+        saveSection = buildSaveSection();
+
+        add(channelRow);
         add(vgap(4));
         add(buildHistogramSection());
         add(vgap(4));
-        add(buildThreshRow("Seed threshold:", seedSlider, seedField));
+        add(seedThresholdSection);
         add(vgap(2));
-        add(buildVolRow(minVolCheck, minVolField));
+        add(minVolRow);
         add(vgap(1));
-        add(buildVolRow(maxVolCheck, maxVolField));
+        add(maxVolRow);
+        add(sizeFilterGuardPanel);
         add(vgap(4));
-        add(buildAreaSection());
+        add(areaSection);
         add(vgap(6));
-        add(buildThreeDSection());
+        add(threeDSection);
         add(vgap(6));
-        add(buildPreviewSection());
+        add(previewSection);
         add(vgap(6));
-        add(buildSaveSection());
+        add(manualSection);
+        add(vgap(6));
+        add(saveSection);
+        add(vgap(6));
+        add(makeRoiSection);
         add(Box.createVerticalGlue());
 
+        sizeFilterDebounceTimer = new javax.swing.Timer(140, e -> applySizeFilterPreviewNow());
+        sizeFilterDebounceTimer.setRepeats(false);
         wireListeners();
+        applyModeVisibility();
         updateEnabled();
         updateSaveToDisplay();
     }
@@ -184,8 +275,10 @@ public final class SegmentationTab extends JPanel {
 
     private JPanel buildHistogramSection() {
         histHolder.setAlignmentX(LEFT_ALIGNMENT);
-        histHolder.setPreferredSize(new Dimension(420, 140));
-        histHolder.setMinimumSize(new Dimension(200, 100));
+        Dimension preferred = new Dimension(420, 140);
+        histHolder.setPreferredSize(preferred);
+        histHolder.setMinimumSize(new Dimension(200, preferred.height));
+        histHolder.setMaximumSize(new Dimension(Integer.MAX_VALUE, preferred.height));
         histHolder.setBorder(BorderFactory.createLineBorder(Color.GRAY));
         noImageHint.setForeground(Color.GRAY);
         histHolder.add(noImageHint, BorderLayout.CENTER);
@@ -199,12 +292,14 @@ public final class SegmentationTab extends JPanel {
         JPanel labelRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
         labelRow.setAlignmentX(LEFT_ALIGNMENT);
         labelRow.add(new JLabel(labelText));
-        JPanel sliderRow = new JPanel(new BorderLayout(4, 0));
+        labelRow.add(field);
+        JPanel sliderRow = new JPanel(new BorderLayout(0, 0));
         sliderRow.setAlignmentX(LEFT_ALIGNMENT);
+        sliderRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, slider.getPreferredSize().height));
         sliderRow.add(slider, BorderLayout.CENTER);
-        sliderRow.add(field,  BorderLayout.EAST);
         outer.add(labelRow);
         outer.add(sliderRow);
+        outer.setMaximumSize(new Dimension(Integer.MAX_VALUE, outer.getPreferredSize().height));
         return outer;
     }
 
@@ -213,6 +308,21 @@ public final class SegmentationTab extends JPanel {
         p.setAlignmentX(LEFT_ALIGNMENT);
         p.add(check, BorderLayout.WEST);
         p.add(field, BorderLayout.EAST);
+        if (check == minVolCheck) p.add(minVolSlider, BorderLayout.CENTER);
+        else if (check == maxVolCheck) p.add(maxVolSlider, BorderLayout.CENTER);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
+        return p;
+    }
+
+    private JPanel buildManualResetGuardPanel() {
+        JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        p.setAlignmentX(LEFT_ALIGNMENT);
+        JLabel label = new JLabel("Manual edits are active. Clear manual edits to change threshold or size filter.");
+        label.setFont(label.getFont().deriveFont(Font.ITALIC, 11f));
+        label.setForeground(Color.GRAY);
+        p.add(label);
+        p.setVisible(false);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
         return p;
     }
 
@@ -224,12 +334,14 @@ public final class SegmentationTab extends JPanel {
         labelRow.setAlignmentX(LEFT_ALIGNMENT);
         labelRow.add(areaEnabledCheck);
         labelRow.add(new JLabel("Area threshold:"));
+        labelRow.add(areaField);
         JPanel sliderRow = new JPanel(new BorderLayout(4, 0));
         sliderRow.setAlignmentX(LEFT_ALIGNMENT);
+        sliderRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, areaSlider.getPreferredSize().height));
         sliderRow.add(areaSlider, BorderLayout.CENTER);
-        sliderRow.add(areaField,  BorderLayout.EAST);
         outer.add(labelRow);
         outer.add(sliderRow);
+        outer.setMaximumSize(new Dimension(Integer.MAX_VALUE, outer.getPreferredSize().height));
         return outer;
     }
 
@@ -239,11 +351,8 @@ public final class SegmentationTab extends JPanel {
         JPanel connRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         connRow.setAlignmentX(LEFT_ALIGNMENT);
         connRow.add(new JLabel("Connectivity:")); connRow.add(connectivityBox); connRow.add(fillHolesCheck);
-        ButtonGroup cg = new ButtonGroup(); cg.add(conflictMaxBtn); cg.add(conflictSplitBtn);
-        JPanel conflictRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
-        conflictRow.setAlignmentX(LEFT_ALIGNMENT);
-        conflictRow.add(new JLabel("Area conflict:")); conflictRow.add(conflictMaxBtn); conflictRow.add(conflictSplitBtn);
-        p.add(connRow); p.add(conflictRow);
+        p.add(connRow);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
         return p;
     }
 
@@ -251,18 +360,22 @@ public final class SegmentationTab extends JPanel {
         JPanel p = titledPanel("Preview");
         p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
 
-        // Mode + colors
+        // ROI preview is fixed; only colors remain configurable.
         ButtonGroup mg = new ButtonGroup(); mg.add(modeOff); mg.add(modeRoi); mg.add(modeRoiLight);
         JPanel modeRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         modeRow.setAlignmentX(LEFT_ALIGNMENT);
-        modeRow.add(new JLabel("Mode:"));
-        modeRow.add(modeOff); modeRow.add(modeRoi); modeRow.add(modeRoiLight);
-        modeRow.add(Box.createHorizontalStrut(10));
-        modeRow.add(new JLabel("Seed:")); modeRow.add(btnSeedColor);
-        modeRow.add(new JLabel("Result:")); modeRow.add(btnResultColor);
+        if (mode == Mode.SEED) {
+            modeRow.add(new JLabel("Outside size filter:")); modeRow.add(btnSeedColor);
+            modeRow.add(new JLabel("Output ROI:")); modeRow.add(btnResultColor);
+        } else {
+            modeRow.add(new JLabel("Seed:")); modeRow.add(btnSeedColor);
+            modeRow.add(new JLabel("Area / result:")); modeRow.add(btnResultColor);
+        }
 
         // Apply / Cancel / Clear
         btnCancel.setEnabled(false);
+        btnCancel.setFocusable(false);
+        btnClearPreview.setFocusable(false);
         previewCountLabel.setFont(previewCountLabel.getFont().deriveFont(Font.ITALIC, 11f));
         previewCountLabel.setForeground(Color.DARK_GRAY);
         JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
@@ -270,7 +383,44 @@ public final class SegmentationTab extends JPanel {
         actionRow.add(btnApply); actionRow.add(btnCancel); actionRow.add(btnClearPreview);
         actionRow.add(previewCountLabel);
 
-        p.add(modeRow); p.add(actionRow);
+        p.add(modeRow);
+        if (mode == Mode.SEED) {
+            JPanel noiseRow = new JPanel(new BorderLayout(6, 0));
+            noiseRow.setAlignmentX(LEFT_ALIGNMENT);
+            noiseRow.add(previewNoiseCheck, BorderLayout.WEST);
+            noiseRow.add(previewNoiseSlider, BorderLayout.CENTER);
+            noiseRow.add(previewNoiseField, BorderLayout.EAST);
+            noiseRow.setMaximumSize(new Dimension(Integer.MAX_VALUE, noiseRow.getPreferredSize().height));
+            p.add(noiseRow);
+        }
+        p.add(actionRow);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
+        return p;
+    }
+
+    private JPanel buildMakeRoiSection() {
+        JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        p.setAlignmentX(LEFT_ALIGNMENT);
+        if (mode == Mode.AREA_RESULT) p.add(btnMakeResultRoi);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
+        return p;
+    }
+
+    private JPanel buildManualSection() {
+        JPanel p = titledPanel("Manual seed accept/reject");
+        p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
+        JLabel note = new JLabel("Manual picks are reset when threshold or size filter changes.");
+        note.setFont(note.getFont().deriveFont(Font.ITALIC, 11f));
+        note.setForeground(Color.GRAY);
+        note.setAlignmentX(LEFT_ALIGNMENT);
+        JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        row.setAlignmentX(LEFT_ALIGNMENT);
+        row.add(btnManualInclude);
+        row.add(btnManualExclude);
+        row.add(btnManualClear);
+        p.add(note);
+        p.add(row);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
         return p;
     }
 
@@ -280,7 +430,14 @@ public final class SegmentationTab extends JPanel {
 
         JPanel folderRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         folderRow.setAlignmentX(LEFT_ALIGNMENT);
-        folderRow.add(new JLabel("Result folder:")); folderRow.add(resultPatternField);
+        folderRow.add(new JLabel("Project folder name:"));
+        folderRow.add(resultPatternField);
+        JButton btnResetPattern = new JButton("↺");
+        btnResetPattern.setMargin(new Insets(2, 4, 2, 4));
+        btnResetPattern.setFocusable(false);
+        btnResetPattern.setToolTipText("Reset to default: {name} result");
+        btnResetPattern.addActionListener(e -> resultPatternField.setText("{name} result"));
+        folderRow.add(btnResetPattern);
 
         // Save-to row
         saveToDirDisplay.setEditable(false);
@@ -301,12 +458,18 @@ public final class SegmentationTab extends JPanel {
 
         JPanel modeRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         modeRow.setAlignmentX(LEFT_ALIGNMENT);
-        modeRow.add(new JLabel("Save mode:")); modeRow.add(saveModeBox);
+        modeRow.add(new JLabel("ROI save mode:")); modeRow.add(saveModeBox);
 
         p.add(folderRow);
         p.add(saveToRow);
         p.add(saveToHintLabel);
         p.add(modeRow);
+        if (mode == Mode.SEED) {
+            JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+            actionRow.setAlignmentX(LEFT_ALIGNMENT);
+            actionRow.add(btnMakeSeedRoi);
+            p.add(actionRow);
+        }
 
         // Wire buttons
         btnSaveTo.addActionListener(e -> {
@@ -323,6 +486,7 @@ public final class SegmentationTab extends JPanel {
             updateSaveToDisplay();
         });
 
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
         return p;
     }
 
@@ -343,7 +507,7 @@ public final class SegmentationTab extends JPanel {
             int oldBg = model.getTBg(), oldFg = model.getTFg();
             syncing = true; seedField.setText(String.valueOf(val)); model.setTFg(val); syncing = false;
             if (histogramPanel != null) histogramPanel.repaintThresholdMarkers(oldBg, oldFg);
-            onParamsChanged();
+            onThresholdParamsChanged();
         });
         seedField.addActionListener(e -> commitSeedField());
         seedField.addFocusListener(new FocusAdapter() { @Override public void focusLost(FocusEvent e) { commitSeedField(); } });
@@ -355,7 +519,7 @@ public final class SegmentationTab extends JPanel {
             int oldBg = model.getTBg(), oldFg = model.getTFg();
             syncing = true; areaField.setText(String.valueOf(val)); model.setTBg(val); syncing = false;
             if (histogramPanel != null) histogramPanel.repaintThresholdMarkers(oldBg, oldFg);
-            onParamsChanged();
+            onThresholdParamsChanged();
         });
         areaField.addActionListener(e -> commitAreaField());
         areaField.addFocusListener(new FocusAdapter() { @Override public void focusLost(FocusEvent e) { commitAreaField(); } });
@@ -363,21 +527,66 @@ public final class SegmentationTab extends JPanel {
         // Volume / area enabled
         minVolField.setEnabled(minVolCheck.isSelected());
         maxVolField.setEnabled(maxVolCheck.isSelected());
+        minVolSlider.setEnabled(minVolCheck.isSelected());
+        maxVolSlider.setEnabled(maxVolCheck.isSelected());
         areaSlider.setEnabled(areaEnabledCheck.isSelected());
         areaField.setEnabled(areaEnabledCheck.isSelected());
-        minVolCheck.addActionListener(e -> { minVolField.setEnabled(minVolCheck.isSelected()); onParamsChanged(); });
-        maxVolCheck.addActionListener(e -> { maxVolField.setEnabled(maxVolCheck.isSelected()); onParamsChanged(); });
+        minVolCheck.addActionListener(e -> {
+            minVolField.setEnabled(minVolCheck.isSelected());
+            minVolSlider.setEnabled(minVolCheck.isSelected());
+            onSizeFilterChanged();
+        });
+        maxVolCheck.addActionListener(e -> {
+            maxVolField.setEnabled(maxVolCheck.isSelected());
+            maxVolSlider.setEnabled(maxVolCheck.isSelected());
+            onSizeFilterChanged();
+        });
         areaEnabledCheck.addActionListener(e -> {
             boolean en = areaEnabledCheck.isSelected();
             areaSlider.setEnabled(en); areaField.setEnabled(en);
             onParamsChanged();
         });
-        minVolField.addActionListener(e -> onParamsChanged());
-        maxVolField.addActionListener(e -> onParamsChanged());
+        minVolField.addActionListener(e -> commitSizeFilterFields());
+        maxVolField.addActionListener(e -> commitSizeFilterFields());
+        minVolField.addFocusListener(new FocusAdapter() { @Override public void focusLost(FocusEvent e) { commitSizeFilterFields(); } });
+        maxVolField.addFocusListener(new FocusAdapter() { @Override public void focusLost(FocusEvent e) { commitSizeFilterFields(); } });
+        minVolSlider.addChangeListener(e -> {
+            if (syncing) return;
+            syncing = true;
+            minVolField.setText(formatVolume(sliderToVolume(minVolSlider)));
+            syncing = false;
+            onSizeFilterChanged();
+        });
+        maxVolSlider.addChangeListener(e -> {
+            if (syncing) return;
+            syncing = true;
+            maxVolField.setText(formatVolume(sliderToVolume(maxVolSlider)));
+            syncing = false;
+            onSizeFilterChanged();
+        });
+        previewNoiseCheck.addActionListener(e -> {
+            previewNoiseField.setEnabled(previewNoiseCheck.isSelected());
+            previewNoiseSlider.setEnabled(previewNoiseCheck.isSelected());
+            onSizeFilterChanged();
+        });
+        previewNoiseField.addActionListener(e -> commitPreviewNoiseField());
+        previewNoiseField.addFocusListener(new FocusAdapter() {
+            @Override public void focusLost(FocusEvent e) { commitPreviewNoiseField(); }
+        });
+        previewNoiseSlider.addChangeListener(e -> {
+            if (syncing) return;
+            syncing = true;
+            previewNoiseField.setText(formatVolume(sliderToVolume(previewNoiseSlider)));
+            syncing = false;
+            onSizeFilterChanged();
+        });
         connectivityBox.addActionListener(e -> onParamsChanged());
         fillHolesCheck.addActionListener(e -> onParamsChanged());
         conflictMaxBtn.addActionListener(e -> onParamsChanged());
         conflictSplitBtn.addActionListener(e -> onParamsChanged());
+        btnManualInclude.addActionListener(e -> toggleManualPickMode(ManualPickMode.INCLUDE));
+        btnManualExclude.addActionListener(e -> toggleManualPickMode(ManualPickMode.EXCLUDE));
+        btnManualClear.addActionListener(e -> clearManualPicks());
 
         // Preview mode change:
         //   - switching Off clears overlay and label
@@ -430,27 +639,115 @@ public final class SegmentationTab extends JPanel {
         });
 
         // Preview buttons
-        btnApply.addActionListener(e -> applyPreview());
+        // SEED: SegmentationTab 内部で完結するため直接登録
+        // AREA_RESULT: seed ROI ファイルを使うため WorkflowWindow.cmdPreview() が担当
+        //              ここで applyPreview() を登録すると内部 seed 計算の二重発火が起きる
+        if (mode == Mode.SEED) {
+            btnApply.addActionListener(e -> applyPreview());
+        }
         btnCancel.addActionListener(e -> cancelPreview());
         btnClearPreview.addActionListener(e -> clearPreview());
+    }
+
+    private void applyModeVisibility() {
+        channelRow.setVisible(false);
+        saveSection.setVisible(mode == Mode.SEED);
+        conflictMaxBtn.setSelected(true);
+        conflictSplitBtn.setSelected(false);
+        if (mode == Mode.SEED) {
+            areaSection.setVisible(false);
+            previewNoiseField.setEnabled(previewNoiseCheck.isSelected());
+            previewNoiseSlider.setEnabled(previewNoiseCheck.isSelected());
+            manualSection.setVisible(true);
+            updateManualButtonState();
+            btnResultColor.setToolTipText("Seed ROI output color");
+            btnSeedColor.setToolTipText("Filtered-out seed color");
+            modeOff.setVisible(false);
+            modeRoiLight.setVisible(false);
+            modeRoi.setSelected(true);
+            areaEnabledCheck.setSelected(false);
+        } else {
+            seedThresholdSection.setVisible(false);
+            minVolRow.setVisible(false);
+            maxVolRow.setVisible(false);
+            sizeFilterGuardPanel.setVisible(false);
+            manualSection.setVisible(false);
+            modeOff.setVisible(false);
+            modeRoiLight.setVisible(false);
+            modeRoi.setSelected(true);
+            areaEnabledCheck.setSelected(true);
+            areaEnabledCheck.setVisible(false);
+        }
     }
 
     // ── Param change ───────────────────────────────────────────────────
 
     private void onParamsChanged() {
+        onThresholdParamsChanged();
+    }
+
+    private void onThresholdParamsChanged() {
+        if (sizeFilterDebounceTimer.isRunning()) sizeFilterDebounceTimer.stop();
+        uninstallManualPickMode();
+        manualIncludeLabels.clear();
+        manualExcludeLabels.clear();
+        updateManualButtonState();
+        updateManualEditGuardState();
         clearPreviewCache();
         if (!modeOff.isSelected()) {
             previewCountLabel.setText("Press Apply to update");
         }
     }
 
+    private void onSizeFilterChanged() {
+        if (mode == Mode.SEED && cachedSeedRawRoisByLabel != null && cachedSeedVoxelCounts != null) {
+            manualIncludeLabels.clear();
+            manualExcludeLabels.clear();
+            updateManualButtonState();
+            updateManualEditGuardState();
+            previewCountLabel.setText("Updating size filter...");
+            sizeFilterDebounceTimer.restart();
+            return;
+        }
+        onThresholdParamsChanged();
+    }
+
+    private void applySizeFilterPreviewNow() {
+        if (rebuildSeedPreviewFromSizeFilter()) return;
+        onThresholdParamsChanged();
+    }
+
+    private void commitSizeFilterFields() {
+        if (syncing) return;
+        syncSizeSlidersFromFields();
+        onSizeFilterChanged();
+    }
+
+    private void commitPreviewNoiseField() {
+        if (syncing) return;
+        boolean wasSyncing = syncing;
+        syncing = true;
+        previewNoiseSlider.setValue(volumeToSlider(parseDoubleOrDefault(previewNoiseField.getText(), 0.0)));
+        syncing = wasSyncing;
+        onSizeFilterChanged();
+    }
+
     // ── Preview: apply ─────────────────────────────────────────────────
 
     public void applyPreview() {
+        applyPreview(null);
+    }
+
+    public void applyPreviewFromSeedLabels(ImagePlus seedLabelImage) {
+        applyPreview(seedLabelImage);
+    }
+
+    private void applyPreview(ImagePlus seedLabelImage) {
         if (currentImage == null || modeOff.isSelected()) return;
 
         SegmentationParams params = getParams();
-        String key = makeKey(params);
+        String key = makeKey(params) + (seedLabelImage != null ? ":editedSeeds:" + System.nanoTime() : "");
+        String seedBaseKey = makeSeedBaseKey(params);
 
         // Cache hit: just re-render current Z
         if (cachedFinalRoisByZ != null && key.equals(cachedKey)) {
@@ -476,10 +773,14 @@ public final class SegmentationTab extends JPanel {
             @Override
             protected PreviewResult doInBackground() {
                 try {
-                    SeededQuantifier3D.SeededResult seeded = SeededQuantifier3D.compute(
-                        channelImg, params.areaThreshold, params.seedThreshold,
-                        params.toQuantifierParams(), vw * vh * vd, params.areaEnabled,
-                        null, cancelRequested::get);
+                    SeededQuantifier3D.SeededResult seeded = seedLabelImage != null
+                        ? SeededQuantifier3D.computeFromSeedLabels(
+                            channelImg, seedLabelImage, params.areaThreshold,
+                            params.toQuantifierParams(), params.areaEnabled, null, cancelRequested::get)
+                        : SeededQuantifier3D.compute(
+                            channelImg, params.areaThreshold, params.seedThreshold,
+                            params.toQuantifierParams(), vw * vh * vd, params.areaEnabled,
+                            null, cancelRequested::get);
                     if (seeded == null || seeded.finalSeg == null || seeded.finalSeg.labelImage == null) {
                         return null;
                     }
@@ -487,7 +788,13 @@ public final class SegmentationTab extends JPanel {
                     Map<Integer, List<Roi>> finalRois = exporter.exportToRoiListsByLabel(
                         seeded.finalSeg.labelImage, null, currentImage, params.channel);
                     Map<Integer, List<Roi>> seedRois = null;
-                    if (params.areaEnabled && seeded.seedSeg != null && seeded.seedSeg.labelImage != null) {
+                    if (mode == Mode.SEED && seeded.rawSeedSeg != null && seeded.rawSeedSeg.labelImage != null) {
+                        Map<Integer, List<Roi>> rawRois = exporter.exportToRoiListsByLabel(
+                            seeded.rawSeedSeg.labelImage, null, currentImage, params.channel);
+                        seedRois = rejectedSeedRois(rawRois, finalRois);
+                        return new PreviewResult(finalRois, seedRois, rawRois,
+                            seeded.seedVoxelCounts, vw * vh * vd);
+                    } else if (params.areaEnabled && seeded.seedSeg != null && seeded.seedSeg.labelImage != null) {
                         seedRois = exporter.exportToRoiListsByLabel(
                             seeded.seedSeg.labelImage, null, currentImage, params.channel);
                     }
@@ -502,7 +809,9 @@ public final class SegmentationTab extends JPanel {
                 setPreviewBusy(false);
                 try {
                     PreviewResult result = get();
-                    if (result == null || result.finalSliceRois == null || result.finalSliceRois.isEmpty()) {
+                    boolean noAccepted = result == null || result.finalSliceRois == null || result.finalSliceRois.isEmpty();
+                    boolean noRejected = result == null || result.seedSliceRois == null || result.seedSliceRois.isEmpty();
+                    if (result == null || (mode == Mode.SEED ? (noAccepted && noRejected) : noAccepted)) {
                         previewCountLabel.setText("No spots found.");
                         return;
                     }
@@ -511,10 +820,27 @@ public final class SegmentationTab extends JPanel {
                     cachedZProjResultRois = computeZProjRois(result.finalSliceRois);
                     cachedZProjSeedRois = result.seedSliceRois != null ? computeZProjRois(result.seedSliceRois) : null;
                     cachedKey = key;
+                    if (mode == Mode.SEED) {
+                        cachedSeedBaseKey = seedBaseKey;
+                        cachedSeedRawRoisByLabel = result.rawSeedRois;
+                        cachedSeedVoxelCounts = result.seedVoxelCounts;
+                        cachedSeedVoxelVolume = result.voxelVolume;
+                        manualIncludeLabels.clear();
+                        manualExcludeLabels.clear();
+                        updateManualButtonState();
+                        updateManualEditGuardState();
+                        updateSizeSliderRangeFromCache();
+                        if (rebuildSeedPreviewFromSizeFilter()) return;
+                    }
                     renderPreview(currentZPlane());
                     renderSelectedZProjOverlay();
                     int n = result.finalSliceRois.size();
-                    previewCountLabel.setText(n + " spot" + (n != 1 ? "s" : ""));
+                    if (mode == Mode.SEED && result.seedSliceRois != null && !result.seedSliceRois.isEmpty()) {
+                        int rejected = result.seedSliceRois.size();
+                        previewCountLabel.setText(n + " kept, " + rejected + " filtered out");
+                    } else {
+                        previewCountLabel.setText(n + " spot" + (n != 1 ? "s" : ""));
+                    }
                 } catch (CancellationException e) {
                     previewCountLabel.setText("Cancelled.");
                 } catch (Exception e) {
@@ -528,12 +854,20 @@ public final class SegmentationTab extends JPanel {
     // ── Preview: render current Z ──────────────────────────────────────
 
     private void renderPreview(int zPlane) {
-        if (!tabActive || cachedFinalRoisByZ == null || currentImage == null || modeOff.isSelected()) return;
+        if (!originalPreviewActive || cachedFinalRoisByZ == null || currentImage == null || modeOff.isSelected()) return;
 
         Overlay overlay = new Overlay();
-        addRoisToOverlay(overlay, cachedFinalRoisByZ.get(zPlane), resultColor);
-        if (areaEnabledCheck.isSelected() && cachedSeedRoisByZ != null) {
-            addRoisToOverlay(overlay, cachedSeedRoisByZ.get(zPlane), seedColor);
+        if (mode == Mode.SEED) {
+            addRoisToOverlay(overlay, cachedSeedRoisByZ != null ? cachedSeedRoisByZ.get(zPlane) : null, seedColor);
+            addRoisToOverlay(overlay, cachedFinalRoisByZ.get(zPlane), resultColor);
+            if (manualHoverLabel != null && !manualHoverOnZProj) {
+                addRoisToOverlay(overlay, filterRoisForZ(cachedSeedRawRoisByLabel.get(manualHoverLabel), zPlane), MANUAL_HOVER_COLOR);
+            }
+        } else {
+            addRoisToOverlay(overlay, cachedFinalRoisByZ.get(zPlane), resultColor);
+            if (cachedSeedRoisByZ != null) {
+                addRoisToOverlay(overlay, cachedSeedRoisByZ.get(zPlane), seedColor);
+            }
         }
 
         currentImage.setOverlay(overlay);
@@ -541,7 +875,7 @@ public final class SegmentationTab extends JPanel {
     }
 
     private void renderZProjOverlay(ImagePlus zp) {
-        if (zp == null || cachedZProjResultRois == null) return;
+        if (!zprojPreviewActive || zp == null || cachedZProjResultRois == null) return;
         Overlay overlay = new Overlay();
 
         if (modeRoiLight.isSelected()) {
@@ -550,7 +884,7 @@ public final class SegmentationTab extends JPanel {
                 merged.setStrokeColor(resultColor);
                 overlay.add(merged);
             }
-            if (areaEnabledCheck.isSelected() && cachedZProjSeedRois != null) {
+            if (cachedZProjSeedRois != null) {
                 ShapeRoi mergedSeed = mergeAll(cachedZProjSeedRois);
                 if (mergedSeed != null) {
                     mergedSeed.setStrokeColor(seedColor);
@@ -558,9 +892,17 @@ public final class SegmentationTab extends JPanel {
                 }
             }
         } else {
-            addRoisToOverlay(overlay, cachedZProjResultRois, resultColor);
-            if (areaEnabledCheck.isSelected() && cachedZProjSeedRois != null) {
+            if (mode == Mode.SEED) {
                 addRoisToOverlay(overlay, cachedZProjSeedRois, seedColor);
+                addRoisToOverlay(overlay, cachedZProjResultRois, resultColor);
+                if (manualHoverLabel != null && manualHoverOnZProj) {
+                    addRoisToOverlay(overlay, computeZProjRoisForLabel(manualHoverLabel), MANUAL_HOVER_COLOR);
+                }
+            } else {
+                addRoisToOverlay(overlay, cachedZProjResultRois, resultColor);
+                if (cachedZProjSeedRois != null) {
+                    addRoisToOverlay(overlay, cachedZProjSeedRois, seedColor);
+                }
             }
         }
 
@@ -582,7 +924,14 @@ public final class SegmentationTab extends JPanel {
 
     /** Segmentation タブの表示状態を通知する。非表示中は Z-watcher によるオーバーレイ再描画を抑制する。 */
     public void setTabActive(boolean active) {
-        tabActive = active;
+        setPreviewActive(active, active);
+    }
+
+    public void setPreviewActive(boolean originalActive, boolean zprojActive) {
+        originalPreviewActive = originalActive;
+        zprojPreviewActive = zprojActive;
+        if (originalActive) renderPreview(currentZPlane());
+        if (zprojActive) renderSelectedZProjOverlay();
     }
 
     /** Clears overlay on the image and Z-proj, but keeps the cache. */
@@ -590,11 +939,29 @@ public final class SegmentationTab extends JPanel {
         clearPreviewOverlay();
     }
 
+    public void clearOriginalOverlayOnly() {
+        if (currentImage != null) {
+            currentImage.setOverlay(null);
+            // updateAndDraw は呼ばない: ROI Explorer が overlay を管理するため
+            // 不要な imageUpdated → refreshOverlay 連鎖を避ける
+        }
+    }
+
+    public void clearZProjOverlayOnly() {
+        ImagePlus zp = getZProjImp();
+        if (zp != null) { zp.setOverlay(null); zp.updateAndDraw(); }
+    }
+
     /** Clears overlay, cancels computation, and frees the cache. */
     public void clearPreview() {
         cancelPreview();
+        uninstallManualPickMode();
         clearPreviewOverlay();
         clearPreviewCache();
+        manualIncludeLabels.clear();
+        manualExcludeLabels.clear();
+        updateManualButtonState();
+        updateManualEditGuardState();
         previewCountLabel.setText("");
     }
 
@@ -626,7 +993,7 @@ public final class SegmentationTab extends JPanel {
     }
 
     private void updatePreviewForZChange() {
-        if (!tabActive || modeOff.isSelected() || cachedFinalRoisByZ == null) return;
+        if (!originalPreviewActive || modeOff.isSelected() || cachedFinalRoisByZ == null) return;
         SwingUtilities.invokeLater(() -> renderPreview(currentZPlane()));
     }
 
@@ -710,6 +1077,7 @@ public final class SegmentationTab extends JPanel {
     public void onWindowClosing() {
         cancelRequested.set(true);
         previewGen.incrementAndGet();
+        uninstallManualPickMode();
         clearPreviewOverlay();
         clearPreviewCache();
         if (zWatcher != null) {
@@ -735,10 +1103,12 @@ public final class SegmentationTab extends JPanel {
     private void updateSaveToDisplay() {
         if (saveBaseDir != null) {
             saveToDirDisplay.setText(saveBaseDir.toString());
+            saveToDirDisplay.setToolTipText(saveBaseDir.toString());
             saveToDirDisplay.setForeground(UIManager.getColor("TextField.foreground"));
             saveToHintLabel.setText("");
         } else {
             saveToDirDisplay.setText("(auto — follows image file location)");
+            saveToDirDisplay.setToolTipText("(auto — follows image file location)");
             saveToDirDisplay.setForeground(Color.GRAY);
             java.nio.file.Path auto = getEffectiveSaveBaseDir();
             saveToHintLabel.setText(auto != null ? "→ " + auto : "→ will prompt when saving");
@@ -746,6 +1116,10 @@ public final class SegmentationTab extends JPanel {
     }
 
     public void updateImage(ImagePlus image) {
+        boolean imageChanged = currentImage != null && currentImage != image;
+        if (imageChanged) {
+            clearPreview();
+        }
         currentImage = image;
         updateUnit(image);
         refreshZProjCombo();
@@ -756,12 +1130,13 @@ public final class SegmentationTab extends JPanel {
         updateHistogramForChannel();
         updateEnabled();
         installZWatcher();
+        if (imageChanged) onThresholdParamsChanged();
     }
 
     public void updateUnit(ImagePlus image) {
         String unit = resolveUnit(image);
         minVolCheck.setText(volLabel(unit));
-        maxVolCheck.setText(volLabel(unit));
+        maxVolCheck.setText(maxVolLabel(unit));
     }
 
     public void setParams(SegmentationParams p) {
@@ -770,13 +1145,17 @@ public final class SegmentationTab extends JPanel {
         seedField.setText(String.valueOf(p.seedThreshold));
         areaSlider.setValue(clamp(p.areaThreshold, imgMin, imgMax));
         areaField.setText(String.valueOf(p.areaThreshold));
-        areaEnabledCheck.setSelected(p.areaEnabled);
+        // AREA_RESULT モードでは常に area enabled（パラメータファイルの値に関わらず）
+        areaEnabledCheck.setSelected(mode == Mode.AREA_RESULT || p.areaEnabled);
         minVolCheck.setSelected(p.minVolUm3 != null);
         minVolField.setText(p.minVolUm3 != null ? String.valueOf(p.minVolUm3) : "");
         minVolField.setEnabled(p.minVolUm3 != null);
         maxVolCheck.setSelected(p.maxVolUm3 != null);
         maxVolField.setText(p.maxVolUm3 != null ? String.valueOf(p.maxVolUm3) : "");
         maxVolField.setEnabled(p.maxVolUm3 != null);
+        minVolSlider.setEnabled(p.minVolUm3 != null);
+        maxVolSlider.setEnabled(p.maxVolUm3 != null);
+        syncSizeSlidersFromFields();
         connectivityBox.setSelectedItem(p.connectivity);
         fillHolesCheck.setSelected(p.fillHoles);
         boolean split = p.areaConflictMode == QuantifierParams.AreaConflictMode.SPLIT;
@@ -797,13 +1176,12 @@ public final class SegmentationTab extends JPanel {
         SegmentationParams p = new SegmentationParams();
         p.seedThreshold       = seedSlider.getValue();
         p.areaThreshold       = areaSlider.getValue();
-        p.areaEnabled         = areaEnabledCheck.isSelected();
-        p.minVolUm3           = minVolCheck.isSelected() ? parseDoubleOrNull(minVolField.getText()) : null;
-        p.maxVolUm3           = maxVolCheck.isSelected() ? parseDoubleOrNull(maxVolField.getText()) : null;
+        p.areaEnabled         = mode == Mode.SEED ? false : areaEnabledCheck.isSelected();
+        p.minVolUm3           = minVolCheck.isSelected() ? effectiveMinFilter(parseDoubleOrNull(minVolField.getText())) : null;
+        p.maxVolUm3           = maxVolCheck.isSelected() ? effectiveMaxFilter(parseDoubleOrNull(maxVolField.getText())) : null;
         p.connectivity        = (Integer) connectivityBox.getSelectedItem();
         p.fillHoles           = fillHolesCheck.isSelected();
-        p.areaConflictMode    = conflictSplitBtn.isSelected()
-            ? QuantifierParams.AreaConflictMode.SPLIT : QuantifierParams.AreaConflictMode.MAX_OVERLAP;
+        p.areaConflictMode    = QuantifierParams.AreaConflictMode.MAX_OVERLAP;
         p.channel             = (Integer) channelSpinner.getValue();
         p.saveMode            = (SaveMode) saveModeBox.getSelectedItem();
         p.resultFolderPattern = resultPatternField.getText().trim();
@@ -811,7 +1189,110 @@ public final class SegmentationTab extends JPanel {
         return p;
     }
 
+    public boolean hasCurrentSeedRoiCache() {
+        if (mode != Mode.SEED || cachedSeedAcceptedRoisByLabel == null || cachedSeedAcceptedRoisByLabel.isEmpty()) {
+            return false;
+        }
+        return makeKey(getParams()).equals(cachedKey);
+    }
+
+    public List<List<Roi>> getCurrentSeedRoiObjects() {
+        if (!hasCurrentSeedRoiCache()) return Collections.emptyList();
+        return new ArrayList<List<Roi>>(cachedSeedAcceptedRoisByLabel.values());
+    }
+
+    public void setExternalChannel(int channel) {
+        int nCh = ((Number) ((SpinnerNumberModel) channelSpinner.getModel()).getMaximum()).intValue();
+        int safe = Math.max(1, Math.min(channel, nCh));
+        boolean changed = ((Integer) channelSpinner.getValue()) != safe;
+        channelSpinner.setValue(safe);
+        if (changed) onThresholdParamsChanged();
+    }
+
+    public void setExternalSaveMode(SaveMode mode) {
+        saveModeBox.setSelectedItem(mode);
+    }
+
+    public void setExternalResultFolderPattern(String pattern) {
+        resultPatternField.setText(pattern != null && !pattern.trim().isEmpty() ? pattern : "{name} result");
+    }
+
+    public void setExternalZProjTitle(String title) {
+        refreshZProjCombo();
+        String safe = title != null && !title.trim().isEmpty() ? title : ZPROJ_NONE;
+        zprojSyncing = true;
+        zprojCombo.setSelectedItem(safe);
+        if (zprojCombo.getSelectedIndex() < 0) zprojCombo.setSelectedItem(ZPROJ_NONE);
+        zprojSyncing = false;
+        renderSelectedZProjOverlay();
+    }
+
     // ── Private helpers ────────────────────────────────────────────────
+
+    private void updateSizeSliderRangeFromCache() {
+        if (cachedSeedVoxelCounts == null || cachedSeedVoxelCounts.isEmpty()) return;
+        double min = Double.POSITIVE_INFINITY;
+        double max = 0.0;
+        for (Long count : cachedSeedVoxelCounts.values()) {
+            if (count == null) continue;
+            double volume = count * cachedSeedVoxelVolume;
+            min = Math.min(min, volume);
+            max = Math.max(max, volume);
+        }
+        if (!Double.isFinite(min)) min = 0.0;
+        if (max <= min) max = min + 1.0;
+        sizeSliderMinVolume = Math.max(0.0, min);
+        sizeSliderMaxVolume = max;
+        syncSizeSlidersFromFields();
+    }
+
+    private void syncSizeSlidersFromFields() {
+        boolean wasSyncing = syncing;
+        syncing = true;
+        minVolSlider.setValue(volumeToSlider(parseDoubleOrDefault(minVolField.getText(), sizeSliderMinVolume)));
+        maxVolSlider.setValue(volumeToSlider(parseDoubleOrDefault(maxVolField.getText(), sizeSliderMaxVolume)));
+        previewNoiseSlider.setValue(volumeToSlider(parseDoubleOrDefault(previewNoiseField.getText(), sizeSliderMinVolume)));
+        syncing = wasSyncing;
+    }
+
+    private int volumeToSlider(double volume) {
+        double min = positiveSizeSliderMin();
+        double max = Math.max(min * 1.000001, sizeSliderMaxVolume);
+        double safeVolume = Math.max(min, Math.min(max, volume));
+        double range = Math.log(max) - Math.log(min);
+        if (range <= 0) return 0;
+        double t = (Math.log(safeVolume) - Math.log(min)) / range;
+        return (int) Math.round(t * 1000.0);
+    }
+
+    private double sliderToVolume(JSlider slider) {
+        double min = positiveSizeSliderMin();
+        double max = Math.max(min * 1.000001, sizeSliderMaxVolume);
+        double t = Math.max(0.0, Math.min(1.0, slider.getValue() / 1000.0));
+        if (t <= 0.0) return min;
+        if (t >= 1.0) return max;
+        return Math.exp(Math.log(min) + t * (Math.log(max) - Math.log(min)));
+    }
+
+    private double positiveSizeSliderMin() {
+        return Math.max(sizeSliderMinVolume, 1.0e-12);
+    }
+
+    private Double effectiveMinFilter(Double value) {
+        if (value == null) return null;
+        return value <= sizeSliderMinVolume * 1.0000001 ? null : value;
+    }
+
+    private Double effectiveMaxFilter(Double value) {
+        if (value == null) return null;
+        return value >= sizeSliderMaxVolume / 1.0000001 ? null : value;
+    }
+
+    private static String formatVolume(double value) {
+        if (value >= 100.0) return String.format(Locale.US, "%.0f", value);
+        if (value >= 10.0) return String.format(Locale.US, "%.1f", value);
+        return String.format(Locale.US, "%.3f", value);
+    }
 
     private void updateHistogramForChannel() {
         int ch = (Integer) channelSpinner.getValue();
@@ -831,11 +1312,15 @@ public final class SegmentationTab extends JPanel {
         syncing = false;
         if (histogramPanel == null) {
             histogramPanel = new HistogramPanel(channelImg, model, histListener);
+            histogramPanel.setBgEnabled(mode != Mode.SEED);
+            histogramPanel.setFgEnabled(mode != Mode.AREA_RESULT);
             histHolder.remove(noImageHint);
             histHolder.add(histogramPanel, BorderLayout.CENTER);
             histHolder.revalidate();
         } else {
             histogramPanel.setImage(channelImg);
+            histogramPanel.setBgEnabled(mode != Mode.SEED);
+            histogramPanel.setFgEnabled(mode != Mode.AREA_RESULT);
         }
         histHolder.repaint();
     }
@@ -844,16 +1329,26 @@ public final class SegmentationTab extends JPanel {
         boolean hasImage = currentImage != null;
         seedSlider.setEnabled(hasImage);
         seedField.setEnabled(hasImage);
+        minVolSlider.setEnabled(hasImage && minVolCheck.isSelected());
+        maxVolSlider.setEnabled(hasImage && maxVolCheck.isSelected());
         areaSlider.setEnabled(hasImage && areaEnabledCheck.isSelected());
         areaField.setEnabled(hasImage && areaEnabledCheck.isSelected());
         boolean activeMode = !modeOff.isSelected();
         btnApply.setEnabled(hasImage && activeMode);
         btnClearPreview.setEnabled(hasImage && activeMode);
+        updateManualEditGuardState();
     }
 
     private void setPreviewBusy(boolean busy) {
         btnApply.setEnabled(!busy);
         btnCancel.setEnabled(busy);
+        if (busy) {
+            // setEnabled(false) に伴う Swing の focus traversal は invokeLater で処理される。
+            // その後にフォーカスを解放しないと負けるため、二段 invokeLater で確実に後処理する。
+            SwingUtilities.invokeLater(() -> SwingUtilities.invokeLater(() ->
+                java.awt.KeyboardFocusManager.getCurrentKeyboardFocusManager()
+                    .clearGlobalFocusOwner()));
+        }
     }
 
     private ImagePlus getZProjImp() {
@@ -877,12 +1372,22 @@ public final class SegmentationTab extends JPanel {
             + ":" + p.areaConflictMode + ":" + p.channel;
     }
 
+    private String makeSeedBaseKey(SegmentationParams p) {
+        return p.seedThreshold + ":" + p.channel;
+    }
+
     private void clearPreviewCache() {
         cachedKey = null;
         cachedFinalRoisByZ = null;
         cachedSeedRoisByZ = null;
         cachedZProjResultRois = null;
         cachedZProjSeedRois = null;
+        cachedSeedBaseKey = null;
+        cachedSeedRawRoisByLabel = null;
+        cachedSeedAcceptedRoisByLabel = null;
+        cachedSeedVoxelCounts = null;
+        sizeSliderMinVolume = 0.0;
+        cachedSeedVoxelVolume = 1.0;
     }
 
     private static Map<Integer, List<Roi>> organizeByZ(Map<Integer, List<Roi>> roisByLabel) {
@@ -900,6 +1405,290 @@ public final class SegmentationTab extends JPanel {
             }
         }
         return roisByZ;
+    }
+
+    private static Map<Integer, List<Roi>> rejectedSeedRois(Map<Integer, List<Roi>> rawRois,
+                                                            Map<Integer, List<Roi>> acceptedRois) {
+        Map<Integer, List<Roi>> rejected = new HashMap<Integer, List<Roi>>();
+        if (rawRois == null || rawRois.isEmpty()) return rejected;
+        Set<Integer> acceptedLabels = acceptedRois != null ? acceptedRois.keySet() : Collections.emptySet();
+        for (Map.Entry<Integer, List<Roi>> entry : rawRois.entrySet()) {
+            if (!acceptedLabels.contains(entry.getKey())) {
+                rejected.put(entry.getKey(), entry.getValue());
+            }
+        }
+        return rejected;
+    }
+
+    private Map<Integer, List<Roi>> visibleRejectedSeedRois(Map<Integer, List<Roi>> rawRois,
+                                                            Map<Integer, List<Roi>> acceptedRois) {
+        Map<Integer, List<Roi>> rejected = new HashMap<Integer, List<Roi>>();
+        if (rawRois == null || rawRois.isEmpty()) return rejected;
+        Set<Integer> acceptedLabels = acceptedRois != null ? acceptedRois.keySet() : Collections.emptySet();
+        Double previewMin = previewNoiseCheck.isSelected()
+            ? effectiveMinFilter(parseDoubleOrDefault(previewNoiseField.getText(), sizeSliderMinVolume))
+            : null;
+        for (Map.Entry<Integer, List<Roi>> entry : rawRois.entrySet()) {
+            if (acceptedLabels.contains(entry.getKey())) continue;
+            Long voxels = cachedSeedVoxelCounts != null ? cachedSeedVoxelCounts.get(entry.getKey()) : null;
+            double vol = (voxels != null ? voxels : 0L) * cachedSeedVoxelVolume;
+            if (previewMin == null || vol >= previewMin) rejected.put(entry.getKey(), entry.getValue());
+        }
+        return rejected;
+    }
+
+    private boolean rebuildSeedPreviewFromSizeFilter() {
+        if (mode != Mode.SEED || cachedSeedRawRoisByLabel == null || cachedSeedVoxelCounts == null) return false;
+        SegmentationParams params = getParams();
+        String seedBaseKey = makeSeedBaseKey(params);
+        if (!seedBaseKey.equals(cachedSeedBaseKey)) return false;
+
+        Map<Integer, List<Roi>> accepted = new HashMap<Integer, List<Roi>>();
+        Map<Integer, List<Roi>> rejected = new HashMap<Integer, List<Roi>>();
+        int hiddenPreviewNoise = 0;
+        Double previewMin = previewNoiseCheck.isSelected()
+            ? effectiveMinFilter(parseDoubleOrDefault(previewNoiseField.getText(), sizeSliderMinVolume))
+            : null;
+        Double minFilter = effectiveMinFilter(params.minVolUm3);
+        Double maxFilter = effectiveMaxFilter(params.maxVolUm3);
+        for (Map.Entry<Integer, List<Roi>> entry : cachedSeedRawRoisByLabel.entrySet()) {
+            Long voxels = cachedSeedVoxelCounts.get(entry.getKey());
+            double vol = (voxels != null ? voxels : 0L) * cachedSeedVoxelVolume;
+            boolean keep = (minFilter == null || vol >= minFilter)
+                && (maxFilter == null || vol <= maxFilter);
+            if (manualIncludeLabels.contains(entry.getKey())) keep = true;
+            if (manualExcludeLabels.contains(entry.getKey())) keep = false;
+            if (keep) {
+                accepted.put(entry.getKey(), entry.getValue());
+            } else if (previewMin == null || vol >= previewMin) {
+                rejected.put(entry.getKey(), entry.getValue());
+            } else {
+                hiddenPreviewNoise++;
+            }
+        }
+
+        cachedSeedAcceptedRoisByLabel = accepted;
+        cachedFinalRoisByZ = organizeByZ(accepted);
+        cachedSeedRoisByZ = organizeByZ(rejected);
+        cachedZProjResultRois = computeZProjRois(accepted);
+        cachedZProjSeedRois = computeZProjRois(rejected);
+        cachedKey = makeKey(params);
+        renderPreview(currentZPlane());
+        renderSelectedZProjOverlay();
+        updateManualButtonState();
+        previewCountLabel.setText(accepted.size() + " kept, " + rejected.size()
+            + " filtered out" + (hiddenPreviewNoise > 0 ? ", " + hiddenPreviewNoise + " hidden" : ""));
+        return true;
+    }
+
+    private void toggleManualPickMode(ManualPickMode mode) {
+        if (cachedSeedRawRoisByLabel == null || cachedSeedRawRoisByLabel.isEmpty()) {
+            previewCountLabel.setText("Press Apply before manual picking.");
+            return;
+        }
+        if (manualPickMode == mode) {
+            uninstallManualPickMode();
+            return;
+        }
+        installManualPickMode(mode);
+    }
+
+    private void installManualPickMode(ManualPickMode mode) {
+        uninstallManualPickMode();
+        manualPickMode = mode;
+        manualPickListener = new MouseAdapter() {
+            @Override public void mouseMoved(MouseEvent e) { handleManualPickMove(e); }
+            @Override public void mouseExited(MouseEvent e) { clearManualHover(); }
+            @Override public void mouseClicked(MouseEvent e) { handleManualPickClick(e); }
+        };
+        addManualPickCanvas(currentImage);
+        addManualPickCanvas(getZProjImp());
+        updateManualButtonState();
+        IJ.showStatus("Seed manual " + (mode == ManualPickMode.INCLUDE ? "include" : "exclude") + ": click ROI on image or Z-proj");
+    }
+
+    private void addManualPickCanvas(ImagePlus imp) {
+        if (imp == null || imp.getCanvas() == null || manualPickListener == null) return;
+        ImageCanvas canvas = imp.getCanvas();
+        if (manualPickCanvases.contains(canvas)) return;
+        canvas.addMouseMotionListener(manualPickListener);
+        canvas.addMouseListener(manualPickListener);
+        manualPickCanvases.add(canvas);
+    }
+
+    private void uninstallManualPickMode() {
+        if (manualPickListener != null) {
+            for (ImageCanvas canvas : new ArrayList<ImageCanvas>(manualPickCanvases)) {
+                canvas.removeMouseMotionListener(manualPickListener);
+                canvas.removeMouseListener(manualPickListener);
+            }
+        }
+        manualPickCanvases.clear();
+        manualPickListener = null;
+        manualPickMode = null;
+        clearManualHover();
+        updateManualButtonState();
+        IJ.showStatus("");
+    }
+
+    private void handleManualPickMove(MouseEvent e) {
+        if (manualPickMode == null || cachedSeedRawRoisByLabel == null) return;
+        Object source = e.getSource();
+        if (!(source instanceof ImageCanvas)) return;
+        ImageCanvas canvas = (ImageCanvas) source;
+        Point point = new Point(canvas.offScreenX(e.getX()), canvas.offScreenY(e.getY()));
+        boolean zproj = getZProjImp() != null && canvas == getZProjImp().getCanvas();
+        Integer label = findSeedLabelAt(point, zproj);
+        if (Objects.equals(label, manualHoverLabel) && zproj == manualHoverOnZProj) return;
+        manualHoverLabel = label;
+        manualHoverOnZProj = zproj;
+        renderPreview(currentZPlane());
+        renderSelectedZProjOverlay();
+    }
+
+    private void handleManualPickClick(MouseEvent e) {
+        if (manualPickMode == null || cachedSeedRawRoisByLabel == null) return;
+        Object source = e.getSource();
+        if (!(source instanceof ImageCanvas)) return;
+        ImageCanvas canvas = (ImageCanvas) source;
+        Point point = new Point(canvas.offScreenX(e.getX()), canvas.offScreenY(e.getY()));
+        boolean zproj = getZProjImp() != null && canvas == getZProjImp().getCanvas();
+        Integer label = findSeedLabelAt(point, zproj);
+        if (label == null) {
+            previewCountLabel.setText("No seed ROI at click.");
+            return;
+        }
+        if (manualPickMode == ManualPickMode.INCLUDE) {
+            manualExcludeLabels.remove(label);
+            manualIncludeLabels.add(label);
+        } else {
+            manualIncludeLabels.remove(label);
+            manualExcludeLabels.add(label);
+        }
+        rebuildSeedPreviewFromSizeFilter();
+        updateManualEditGuardState();
+        if (!e.isShiftDown()) uninstallManualPickMode();
+        e.consume();
+    }
+
+    private void clearManualHover() {
+        if (manualHoverLabel == null) return;
+        manualHoverLabel = null;
+        renderPreview(currentZPlane());
+        renderSelectedZProjOverlay();
+    }
+
+    private Integer findSeedLabelAt(Point point, boolean zproj) {
+        List<Integer> hits = new ArrayList<Integer>();
+        int z = currentZPlane();
+        for (Map.Entry<Integer, List<Roi>> entry : cachedSeedRawRoisByLabel.entrySet()) {
+            for (Roi roi : entry.getValue()) {
+                if (!zproj && !roiMatchesZ(roi, z)) continue;
+                if (roiContains(roi, point.x, point.y)) {
+                    hits.add(entry.getKey());
+                    break;
+                }
+            }
+        }
+        if (hits.isEmpty()) return null;
+        Collections.sort(hits, (a, b) -> Double.compare(labelArea(a), labelArea(b)));
+        return hits.get(0);
+    }
+
+    private boolean roiMatchesZ(Roi roi, int z) {
+        int rz = roi.getCPosition() > 0 ? roi.getZPosition() : roi.getPosition();
+        return rz <= 0 || rz == z;
+    }
+
+    private boolean roiContains(Roi roi, int x, int y) {
+        try {
+            return roi.contains(x, y);
+        } catch (RuntimeException ex) {
+            Rectangle bounds = roi.getBounds();
+            return bounds != null && bounds.contains(x, y);
+        }
+    }
+
+    private double labelArea(Integer label) {
+        List<Roi> rois = cachedSeedRawRoisByLabel.get(label);
+        if (rois == null || rois.isEmpty()) return Double.POSITIVE_INFINITY;
+        double area = 0.0;
+        for (Roi roi : rois) {
+            try {
+                area += roi.getStatistics().area;
+            } catch (RuntimeException ex) {
+                Rectangle bounds = roi.getBounds();
+                if (bounds != null) area += bounds.getWidth() * bounds.getHeight();
+            }
+        }
+        return area > 0 ? area : Double.POSITIVE_INFINITY;
+    }
+
+    private List<Roi> filterRoisForZ(List<Roi> rois, int zPlane) {
+        List<Roi> out = new ArrayList<Roi>();
+        if (rois == null) return out;
+        for (Roi roi : rois) {
+            if (roiMatchesZ(roi, zPlane)) out.add(roi);
+        }
+        return out;
+    }
+
+    private List<Roi> computeZProjRoisForLabel(Integer label) {
+        List<Roi> rois = cachedSeedRawRoisByLabel != null ? cachedSeedRawRoisByLabel.get(label) : null;
+        if (rois == null || rois.isEmpty()) return Collections.emptyList();
+        ShapeRoi projected = null;
+        for (Roi roi : rois) {
+            ShapeRoi sr = new ShapeRoi(cloneForPreviewOverlay(roi));
+            projected = projected == null ? sr : projected.or(sr);
+        }
+        if (projected == null) return Collections.emptyList();
+        projected.setPosition(0);
+        return Collections.<Roi>singletonList(projected);
+    }
+
+    private void clearManualPicks() {
+        if (!hasManualEdits()) return;
+        int ok = JOptionPane.showConfirmDialog(this,
+            "Clear manual include/exclude edits?",
+            "Clear Manual Edits", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (ok != JOptionPane.OK_OPTION) return;
+        manualIncludeLabels.clear();
+        manualExcludeLabels.clear();
+        uninstallManualPickMode();
+        rebuildSeedPreviewFromSizeFilter();
+        updateManualEditGuardState();
+    }
+
+    private void updateManualButtonState() {
+        boolean ready = mode == Mode.SEED && cachedSeedRawRoisByLabel != null && !cachedSeedRawRoisByLabel.isEmpty();
+        btnManualInclude.setEnabled(ready);
+        btnManualExclude.setEnabled(ready);
+        btnManualClear.setEnabled(ready && hasManualEdits());
+        btnManualInclude.setText(manualPickMode == ManualPickMode.INCLUDE ? "Picking Include..." : "Manual Include");
+        btnManualExclude.setText(manualPickMode == ManualPickMode.EXCLUDE ? "Picking Exclude..." : "Manual Exclude");
+    }
+
+    private boolean hasManualEdits() {
+        return !manualIncludeLabels.isEmpty() || !manualExcludeLabels.isEmpty();
+    }
+
+    private void updateManualEditGuardState() {
+        boolean locked = mode == Mode.SEED && hasManualEdits();
+        seedSlider.setEnabled(!locked && currentImage != null);
+        seedField.setEnabled(!locked && currentImage != null);
+        minVolCheck.setEnabled(!locked);
+        minVolField.setEnabled(!locked && currentImage != null && minVolCheck.isSelected());
+        minVolSlider.setEnabled(!locked && currentImage != null && minVolCheck.isSelected());
+        maxVolCheck.setEnabled(!locked);
+        maxVolField.setEnabled(!locked && currentImage != null && maxVolCheck.isSelected());
+        maxVolSlider.setEnabled(!locked && currentImage != null && maxVolCheck.isSelected());
+        previewNoiseCheck.setEnabled(!locked);
+        previewNoiseField.setEnabled(!locked && previewNoiseCheck.isSelected());
+        previewNoiseSlider.setEnabled(!locked && previewNoiseCheck.isSelected());
+        sizeFilterGuardPanel.setVisible(locked);
+        seedThresholdSection.setToolTipText(locked ? "Clear manual edits before changing threshold." : null);
+        minVolRow.setToolTipText(locked ? "Clear manual edits before changing size filter." : null);
+        maxVolRow.setToolTipText(locked ? "Clear manual edits before changing size filter." : null);
     }
 
     private static List<Roi> computeZProjRois(Map<Integer, List<Roi>> roisByLabel) {
@@ -971,7 +1760,8 @@ public final class SegmentationTab extends JPanel {
         return (unit == null || unit.trim().isEmpty()) ? "px" : unit.trim();
     }
 
-    private static String volLabel(String unit) { return "Vol " + unit + "³ (seed)"; }
+    private static String volLabel(String unit) { return "Min size " + unit + "³"; }
+    private static String maxVolLabel(String unit) { return "Max size " + unit + "³"; }
 
     private static JSpinner intSpinner(int val, int min, int max, int step) {
         return new JSpinner(new SpinnerNumberModel(val, min, max, step));
@@ -980,7 +1770,10 @@ public final class SegmentationTab extends JPanel {
     private static JTextField numField(String text) {
         JTextField f = new JTextField(text, 7);
         f.setHorizontalAlignment(JTextField.RIGHT);
-        f.setMaximumSize(new Dimension(80, f.getPreferredSize().height));
+        Dimension size = new Dimension(80, f.getPreferredSize().height);
+        f.setPreferredSize(size);
+        f.setMinimumSize(size);
+        f.setMaximumSize(size);
         return f;
     }
 
@@ -1007,5 +1800,10 @@ public final class SegmentationTab extends JPanel {
     private static Double parseDoubleOrNull(String s) {
         if (s == null || s.trim().isEmpty()) return null;
         try { return Double.parseDouble(s.trim()); } catch (NumberFormatException e) { return null; }
+    }
+
+    private static double parseDoubleOrDefault(String s, double fallback) {
+        if (s == null || s.trim().isEmpty()) return fallback;
+        try { return Double.parseDouble(s.trim()); } catch (NumberFormatException e) { return fallback; }
     }
 }

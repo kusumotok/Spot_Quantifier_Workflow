@@ -40,13 +40,23 @@ public class SeededQuantifier3D {
         public final SegmentationResult3D seedSeg;
         /** Final segmentation (watershed if area enabled, otherwise same as seedSeg). */
         public final SegmentationResult3D finalSeg;
+        /** Raw seed label id -> voxel count. */
+        public final Map<Integer, Long> seedVoxelCounts;
 
         public SeededResult(SegmentationResult3D rawSeedSeg,
                             SegmentationResult3D seedSeg,
                             SegmentationResult3D finalSeg) {
-            this.rawSeedSeg = rawSeedSeg;
-            this.seedSeg    = seedSeg;
-            this.finalSeg   = finalSeg;
+            this(rawSeedSeg, seedSeg, finalSeg, null);
+        }
+
+        public SeededResult(SegmentationResult3D rawSeedSeg,
+                            SegmentationResult3D seedSeg,
+                            SegmentationResult3D finalSeg,
+                            Map<Integer, Long> seedVoxelCounts) {
+            this.rawSeedSeg      = rawSeedSeg;
+            this.seedSeg         = seedSeg;
+            this.finalSeg        = finalSeg;
+            this.seedVoxelCounts = seedVoxelCounts;
         }
     }
 
@@ -127,83 +137,117 @@ public class SeededQuantifier3D {
             for (int st : seedStatus.values()) {
                 if (st == CcResult3D.STATUS_VALID) seedCount++;
             }
-            if (seedCount == 0) {
+            if (seedCount == 0 && areaEnabled) {
                 return null;
             }
 
-            // 3. If area disabled: bypass watershed, return seeds as final result
-            if (!areaEnabled) {
-                return new SeededResult(rawSeedSeg, filteredSeeds, filteredSeeds);
-            }
-
-            // 4. Build domain mask at areaThreshold
-            reportProgress(progress, "building area mask");
-            ImageStack blurredStack = blurred.getStack();
-            ImageStack domainStack  = new ImageStack(w, h);
-            for (int z = 1; z <= d; z++) {
-                checkCancelled(shouldCancel);
-                ImageProcessor ip = blurredStack.getProcessor(z);
-                ByteProcessor bp  = new ByteProcessor(w, h);
-                byte[] bpix = (byte[]) bp.getPixels();
-                for (int y = 0; y < h; y++) {
-                    checkCancelled(shouldCancel);
-                    for (int x = 0; x < w; x++) {
-                        if (ip.get(x, y) >= areaThreshold) {
-                            bpix[y * w + x] = (byte) 255;
-                        }
-                    }
-                }
-                domainStack.addSlice(bp);
-            }
-            ImagePlus domainImp = new ImagePlus("domain", domainStack);
-            if (params.fillHoles) {
-                reportProgress(progress, "filling mask holes");
-                checkCancelled(shouldCancel);
-                IJ.run(domainImp, "Fill Holes", "stack");
-                domainStack = domainImp.getStack();
-                checkCancelled(shouldCancel);
-            }
-
-            reportProgress(progress, "building area components");
-            checkCancelled(shouldCancel);
-            ImagePlus areaLabelImp = BinaryImages.componentsLabeling(domainImp, params.connectivity, 32);
-            ImageStack areaLabelStack = areaLabelImp.getStack();
-
-            AreaPartition partition = partitionAreas(
-                filteredSeeds.labelImage.getStack(), areaLabelStack, params.areaConflictMode, shouldCancel);
-
-            reportProgress(progress, "assigning single-seed areas");
-            ImageStack finalLabelStack = createEmptyLabelStack(filteredSeeds.labelImage.getStack());
-            int ambiguousAreaCount = populateShortcutAndAmbiguousMasks(
-                areaLabelStack,
-                filteredSeeds.labelImage.getStack(),
-                partition,
-                finalLabelStack,
-                shouldCancel);
-
-            if (ambiguousAreaCount == 0) {
-                reportProgress(progress, "watershed skipped");
-                return new SeededResult(rawSeedSeg, filteredSeeds,
-                    new SegmentationResult3D(new ImagePlus(imp.getShortTitle() + "-labels-3D", finalLabelStack)));
-            }
-
-            // 5. Seeded watershed: expand seeds only within ambiguous domains
-            reportProgress(progress, "running watershed on ambiguous areas");
-            Connectivity conn = Connectivity.fromInt(params.connectivity);
-            MarkerResult3D markers = new MarkerResult3D(
-                partition.ambiguousSeedStack,
-                partition.ambiguousDomainStack,
-                partition.ambiguousSeedCount);
-            SegmentationResult3D watershedResult = new Watershed3DRunner().run(blurred, markers, conn, shouldCancel);
-            mergeLabels(finalLabelStack, watershedResult.labelImage.getStack(), shouldCancel);
-            return new SeededResult(rawSeedSeg, filteredSeeds,
-                new SegmentationResult3D(new ImagePlus(imp.getShortTitle() + "-labels-3D", finalLabelStack)));
+            return finishFromSeedLabels(imp, blurred, rawSeedSeg, filteredSeeds,
+                areaThreshold, params, areaEnabled, progress, shouldCancel, seedCC.voxelCounts);
 
         } finally {
             if (params.gaussianBlur && blurred != imp) {
                 blurred.close();
             }
         }
+    }
+
+    public static SeededResult computeFromSeedLabels(ImagePlus imp,
+                                                     ImagePlus seedLabelImage,
+                                                     int areaThreshold,
+                                                     QuantifierParams params,
+                                                     boolean areaEnabled,
+                                                     Consumer<String> progress,
+                                                     BooleanSupplier shouldCancel) {
+        ImagePlus blurred = imp;
+        if (params.gaussianBlur) {
+            reportProgress(progress, "blurring");
+            checkCancelled(shouldCancel);
+            blurred = imp.duplicate();
+            blurred.setTitle(imp.getShortTitle() + "-blurred");
+            IJ.run(blurred, "Gaussian Blur 3D...",
+                "x=" + params.gaussXY + " y=" + params.gaussXY + " z=" + params.gaussZ);
+            checkCancelled(shouldCancel);
+        }
+        try {
+            SegmentationResult3D seeds = new SegmentationResult3D(seedLabelImage);
+            if (countDistinctLabels(seedLabelImage.getStack(), shouldCancel) == 0) return null;
+            return finishFromSeedLabels(imp, blurred, seeds, seeds,
+                areaThreshold, params, areaEnabled, progress, shouldCancel, null);
+        } finally {
+            if (params.gaussianBlur && blurred != imp) blurred.close();
+        }
+    }
+
+    private static SeededResult finishFromSeedLabels(ImagePlus imp,
+                                                     ImagePlus blurred,
+                                                     SegmentationResult3D rawSeedSeg,
+                                                     SegmentationResult3D filteredSeeds,
+                                                     int areaThreshold,
+                                                     QuantifierParams params,
+                                                     boolean areaEnabled,
+                                                     Consumer<String> progress,
+                                                     BooleanSupplier shouldCancel,
+                                                     Map<Integer, Long> seedVoxelCounts) {
+        int w = imp.getWidth();
+        int h = imp.getHeight();
+        int d = imp.getNSlices();
+
+        if (!areaEnabled) return new SeededResult(rawSeedSeg, filteredSeeds, filteredSeeds, seedVoxelCounts);
+
+        reportProgress(progress, "building area mask");
+        ImageStack blurredStack = blurred.getStack();
+        ImageStack domainStack  = new ImageStack(w, h);
+        for (int z = 1; z <= d; z++) {
+            checkCancelled(shouldCancel);
+            ImageProcessor ip = blurredStack.getProcessor(z);
+            ByteProcessor bp  = new ByteProcessor(w, h);
+            byte[] bpix = (byte[]) bp.getPixels();
+            for (int y = 0; y < h; y++) {
+                checkCancelled(shouldCancel);
+                for (int x = 0; x < w; x++) {
+                    if (ip.get(x, y) >= areaThreshold) bpix[y * w + x] = (byte) 255;
+                }
+            }
+            domainStack.addSlice(bp);
+        }
+        ImagePlus domainImp = new ImagePlus("domain", domainStack);
+        if (params.fillHoles) {
+            reportProgress(progress, "filling mask holes");
+            checkCancelled(shouldCancel);
+            IJ.run(domainImp, "Fill Holes", "stack");
+            domainStack = domainImp.getStack();
+            checkCancelled(shouldCancel);
+        }
+
+        reportProgress(progress, "building area components");
+        checkCancelled(shouldCancel);
+        ImagePlus areaLabelImp = BinaryImages.componentsLabeling(domainImp, params.connectivity, 32);
+        ImageStack areaLabelStack = areaLabelImp.getStack();
+
+        AreaPartition partition = partitionAreas(
+            filteredSeeds.labelImage.getStack(), areaLabelStack, params.areaConflictMode, shouldCancel);
+
+        reportProgress(progress, "assigning single-seed areas");
+        ImageStack finalLabelStack = createEmptyLabelStack(filteredSeeds.labelImage.getStack());
+        int ambiguousAreaCount = populateShortcutAndAmbiguousMasks(
+            areaLabelStack, filteredSeeds.labelImage.getStack(), partition, finalLabelStack, shouldCancel);
+
+        if (ambiguousAreaCount == 0) {
+            reportProgress(progress, "watershed skipped");
+            return new SeededResult(rawSeedSeg, filteredSeeds,
+                new SegmentationResult3D(new ImagePlus(imp.getShortTitle() + "-labels-3D", finalLabelStack)),
+                seedVoxelCounts);
+        }
+
+        reportProgress(progress, "running watershed on ambiguous areas");
+        Connectivity conn = Connectivity.fromInt(params.connectivity);
+        MarkerResult3D markers = new MarkerResult3D(
+            partition.ambiguousSeedStack, partition.ambiguousDomainStack, partition.ambiguousSeedCount);
+        SegmentationResult3D watershedResult = new Watershed3DRunner().run(blurred, markers, conn, shouldCancel);
+        mergeLabels(finalLabelStack, watershedResult.labelImage.getStack(), shouldCancel);
+        return new SeededResult(rawSeedSeg, filteredSeeds,
+            new SegmentationResult3D(new ImagePlus(imp.getShortTitle() + "-labels-3D", finalLabelStack)),
+            seedVoxelCounts);
     }
 
     private static void reportProgress(Consumer<String> progress, String message) {

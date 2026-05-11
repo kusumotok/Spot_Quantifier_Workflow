@@ -4,11 +4,12 @@ import ij.ImagePlus;
 import ij.process.ImageProcessor;
 import io.github.kusumotok.spotworkflow.core.model.ThresholdModel;
 
+import javax.swing.JPanel;
 import java.awt.*;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 
-public class HistogramPanel extends Panel {
+public class HistogramPanel extends JPanel {
     private ImagePlus imp;
     private final ThresholdModel model;
     private final ThresholdListener listener;
@@ -19,6 +20,7 @@ public class HistogramPanel extends Panel {
     private int histRangeMin = 0;
     private int histRangeMax = 65535;
     private int dragMode = 0; // 0 none, 1 bg, 2 fg
+    private boolean bgEnabled = true;
     private boolean fgEnabled = true;
     private boolean logScale = true;
     private static final int PAD = 8;
@@ -42,14 +44,14 @@ public class HistogramPanel extends Panel {
                 int x = e.getX();
                 int bgX = valueToX(model.getTBg());
                 int fgX = valueToX(model.getTFg());
-                if (Math.abs(x - bgX) <= HANDLE_TOL) dragMode = 1;
+                if (bgEnabled && Math.abs(x - bgX) <= HANDLE_TOL) dragMode = 1;
                 else if (fgEnabled && Math.abs(x - fgX) <= HANDLE_TOL) dragMode = 2;
                 else {
                     dragMode = 0;
                     int value = xToValue(x);
                     int curBg = model.getTBg();
                     int curFg = model.getTFg();
-                    if (Math.abs(value - curBg) <= Math.abs(value - curFg)) {
+                    if (bgEnabled && (!fgEnabled || Math.abs(value - curBg) <= Math.abs(value - curFg))) {
                         listener.onThresholdsChanged(value, curFg);
                     } else if (fgEnabled) {
                         listener.onThresholdsChanged(curBg, value);
@@ -77,6 +79,12 @@ public class HistogramPanel extends Panel {
         this.imp = imp;
         this.histogram = null; // force recompute for new image
         this.histSlice = -2;
+        invalidateHistogramImage();
+        repaint();
+    }
+
+    public void setBgEnabled(boolean enabled) {
+        this.bgEnabled = enabled;
         invalidateHistogramImage();
         repaint();
     }
@@ -110,7 +118,8 @@ public class HistogramPanel extends Panel {
     }
 
     @Override
-    public void paint(Graphics g) {
+    protected void paintComponent(Graphics g) {
+        super.paintComponent(g);
         if (imp == null) return;
         ensureHistogram();
         int w = getWidth();
@@ -121,20 +130,15 @@ public class HistogramPanel extends Panel {
         int plotH = h - 2 * PAD;
         int bgX = valueToX(model.getTBg());
         int fgX = valueToX(model.getTFg());
-        g.setColor(Color.BLACK);
-        g.drawLine(bgX, PAD, bgX, PAD + plotH);
-        if (fgEnabled) {
-            g.drawLine(fgX, PAD, fgX, PAD + plotH);
-        } else {
-            g.setColor(Color.LIGHT_GRAY);
-            g.drawLine(fgX, PAD, fgX, PAD + plotH);
-            g.drawString("T_fg unused", fgX + 4, PAD + 12);
+        if (bgEnabled) {
+            g.setColor(Color.BLACK);
+            g.drawLine(bgX, PAD, bgX, PAD + plotH);
         }
-    }
-
-    @Override
-    public void update(Graphics g) {
-        paint(g);
+        if (fgEnabled) {
+            g.setColor(Color.BLACK);
+            g.drawLine(fgX, PAD, fgX, PAD + plotH);
+        }
+        // !fgEnabled: tFg は使用しないため線を描かない
     }
 
     private void ensureHistogram() {
@@ -213,7 +217,7 @@ public class HistogramPanel extends Panel {
     private void ensureHistogramImage(int w, int h) {
         if (histogramImage != null && cachedImageWidth == w && cachedImageHeight == h) return;
 
-        histogramImage = createImage(w, h);
+        histogramImage = new java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_RGB);
         cachedImageWidth = w;
         cachedImageHeight = h;
         Graphics ig = histogramImage.getGraphics();

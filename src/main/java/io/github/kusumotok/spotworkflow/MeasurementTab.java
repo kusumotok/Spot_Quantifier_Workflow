@@ -14,11 +14,12 @@ import java.util.Set;
 
 public final class MeasurementTab extends JPanel {
 
+    final JButton btnMeasure = new JButton("Measure");
+
     // ── Output ────────────────────────────────────────────────────────
     private final JCheckBox saveCsvCheck    = new JCheckBox("Save CSV to result folder", true);
     private final JCheckBox showTableCheck  = new JCheckBox("Show ResultsTable",          false);
     private final JCheckBox measureAllCheck = new JCheckBox("Measure all objects (ignore ROI Explorer selection)", true);
-    private final JLabel    outputPathLabel = new JLabel("—");
 
     // ── Columns ───────────────────────────────────────────────────────
     // LinkedHashMap preserves display order
@@ -31,7 +32,7 @@ public final class MeasurementTab extends JPanel {
         add(buildOutputPanel());
         add(Box.createVerticalStrut(8));
         add(buildColumnsPanel());
-        add(Box.createVerticalGlue());
+        add(Box.createVerticalStrut(8));
     }
 
     // ── Panel builders ────────────────────────────────────────────────
@@ -50,15 +51,10 @@ public final class MeasurementTab extends JPanel {
         p.add(saveCsvCheck);
         p.add(showTableCheck);
 
-        JPanel pathRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
-        pathRow.setAlignmentX(LEFT_ALIGNMENT);
-        JLabel lbl = new JLabel("CSV path:");
-        lbl.setFont(lbl.getFont().deriveFont(Font.PLAIN, 11f));
-        outputPathLabel.setFont(outputPathLabel.getFont().deriveFont(Font.PLAIN, 11f));
-        outputPathLabel.setForeground(Color.GRAY);
-        pathRow.add(lbl);
-        pathRow.add(outputPathLabel);
-        p.add(pathRow);
+        JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
+        actionRow.setAlignmentX(LEFT_ALIGNMENT);
+        actionRow.add(btnMeasure);
+        p.add(actionRow);
         return p;
     }
 
@@ -120,13 +116,7 @@ public final class MeasurementTab extends JPanel {
 
     /** Updates the CSV output path display. Call when the result folder changes. */
     public void setOutputFolder(Path resultFolder) {
-        if (resultFolder != null) {
-            outputPathLabel.setText(resultFolder.resolve("measurement.csv").toString());
-            outputPathLabel.setForeground(UIManager.getColor("Label.foreground"));
-        } else {
-            outputPathLabel.setText("(no result folder loaded)");
-            outputPathLabel.setForeground(Color.GRAY);
-        }
+        // Kept as a stable API for WorkflowWindow; the default CSV path is project/measurement.csv.
     }
 
     public MeasurementRequest buildRequest(Path csvOutputPath) {

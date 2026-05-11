@@ -8,7 +8,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
+import java.util.stream.Stream;
 
 public final class RoiSaveService {
 
@@ -25,7 +29,12 @@ public final class RoiSaveService {
      */
     public void saveRois(Path resultFolder, List<List<Roi>> objectRois, SaveMode mode)
             throws IOException {
-        Path roisDir = resultFolder.resolve("rois");
+        saveRoisToRoot(resultFolder.resolve("rois"), objectRois, mode, false);
+    }
+
+    public void saveRoisToRoot(Path roisDir, List<List<Roi>> objectRois, SaveMode mode,
+                               boolean clearExisting) throws IOException {
+        if (clearExisting) deleteContents(roisDir);
         Files.createDirectories(roisDir);
 
         int objIdx = 1;
@@ -36,6 +45,58 @@ public final class RoiSaveService {
             } else {
                 saveZipObject(roisDir, objName, rois, mode);
             }
+        }
+    }
+
+    /**
+     * seed の nameToLabel マッピング（folderName → label）を使って result ROI を保存する。
+     * label から folderName を逆引きし、seed_rois/obj-003_split1 →
+     * result_rois/obj-003_split1 のようにフォルダ名を保持する。
+     * roisByLabel のキーが nameToLabel に存在しないラベルは obj-NNN で fallback。
+     */
+    public void saveRoisByNameMapping(Path roisDir, Map<Integer, List<Roi>> roisByLabel,
+                                      Map<String, Integer> nameToLabel,
+                                      SaveMode mode, boolean clearExisting) throws IOException {
+        if (clearExisting) deleteContents(roisDir);
+        Files.createDirectories(roisDir);
+
+        // 逆引きマップ: label → folderName
+        Map<Integer, String> labelToName = new java.util.HashMap<>();
+        for (Map.Entry<String, Integer> e : nameToLabel.entrySet()) {
+            labelToName.put(e.getValue(), e.getKey());
+        }
+
+        // 未対応ラベルの連番カウンター
+        int fallbackIdx = nameToLabel.size() + 1;
+
+        for (Map.Entry<Integer, List<Roi>> entry : new TreeMap<>(roisByLabel).entrySet()) {
+            int label = entry.getKey();
+            String objName = labelToName.getOrDefault(label,
+                String.format("obj-%03d", fallbackIdx++));
+            List<Roi> rois = entry.getValue();
+            if (mode == SaveMode.FOLDER) {
+                saveFolderObject(roisDir, objName, rois);
+            } else {
+                saveZipObject(roisDir, objName, rois, mode);
+            }
+        }
+    }
+
+    private static void deleteContents(Path dir) throws IOException {
+        if (!Files.exists(dir)) return;
+        try (Stream<Path> paths = Files.walk(dir)) {
+            paths.filter(p -> !p.equals(dir))
+                .sorted(Comparator.reverseOrder())
+                .forEach(p -> {
+                    try {
+                        Files.deleteIfExists(p);
+                    } catch (IOException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
+        } catch (RuntimeException e) {
+            if (e.getCause() instanceof IOException) throw (IOException) e.getCause();
+            throw e;
         }
     }
 
