@@ -279,6 +279,18 @@ public final class WorkflowWindow extends JFrame {
 
     private void bindImage(ImagePlus imp) {
         if (imp == null) return;
+        ImagePlus previous = controller.getSession().getBoundImage();
+        boolean targetChanged = previous != null && previous != imp;
+        if (targetChanged) {
+            controller.getSession().clearProject();
+            projectField.setText("");
+            projectField.setToolTipText(null);
+            seedTab.clearPreview();
+            segmentationTab.clearPreview();
+            seedRoiPanel.closeFolder();
+            resultMeasurePanel.closeFolder();
+            measurementTab.setOutputFolder(null);
+        }
         controller.getSession().setBoundImage(imp);
         seedRoiPanel.setBindImage(imp);
         // resultMeasurePanel は openResultMeasureRoot() で bind する
@@ -291,7 +303,9 @@ public final class WorkflowWindow extends JFrame {
         segmentationTab.updateImage(imp);
         syncSharedParamsToTabs();
         refreshZProjCombo();
-        setStatus("Bound: " + imp.getTitle());
+        setStatus(targetChanged
+            ? "Bound: " + imp.getTitle() + "  |  Project cleared for target image change."
+            : "Bound: " + imp.getTitle());
         updateButtonStates();
     }
 

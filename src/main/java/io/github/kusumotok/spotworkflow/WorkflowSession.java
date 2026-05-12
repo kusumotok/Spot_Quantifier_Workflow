@@ -35,6 +35,13 @@ public final class WorkflowSession {
         roiRoot = p;
     }
     public void setBoundImage(ImagePlus imp) { boundImage = imp; }
+    public void clearProject() {
+        resultFolder = null;
+        roiRoot = null;
+        projectFolder = null;
+        seedRoiRoot = null;
+        resultRoiRoot = null;
+    }
 
     public boolean hasResultFolder() { return resultFolder != null; }
     public boolean hasProjectFolder() { return projectFolder != null; }
@@ -42,11 +49,7 @@ public final class WorkflowSession {
     public boolean hasBoundImage()   { return boundImage != null; }
 
     public void clear() {
-        resultFolder = null;
-        roiRoot = null;
-        projectFolder = null;
-        seedRoiRoot = null;
-        resultRoiRoot = null;
+        clearProject();
         boundImage = null;
     }
 }
