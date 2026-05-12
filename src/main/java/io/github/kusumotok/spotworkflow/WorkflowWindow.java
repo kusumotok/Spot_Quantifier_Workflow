@@ -249,17 +249,16 @@ public final class WorkflowWindow extends JFrame {
     }
 
     private void applyPreviewPolicy(int current, int previous) {
-        if (previous == 1 && current != 1) seedTab.clearZProjOverlayOnly();
-
         switch (current) {
             case 0: // Seed: 3D + Z-proj seed preview
                 seedTab.setPreviewActive(true, true);
                 segmentationTab.setPreviewActive(false, false);
                 break;
-            case 1: // Seed Edit: 3D ROI Explorer + Z-proj seed preview
-                seedTab.setPreviewActive(false, true);
+            case 1: // Seed Edit: ROI Explorer owns both main and sub overlays
+                seedTab.setPreviewActive(false, false);
                 segmentationTab.setPreviewActive(false, false);
-                seedTab.clearOriginalOverlayOnly();
+                seedTab.clearOverlayOnly();
+                syncSeedEditSubImage();
                 if (seedRoiPanel.hasLoadedRoot()) seedRoiPanel.refreshOverlay();
                 break;
             case 2: // Area / Result: 3D + Z-proj area preview
@@ -293,6 +292,7 @@ public final class WorkflowWindow extends JFrame {
         }
         controller.getSession().setBoundImage(imp);
         seedRoiPanel.setBindImage(imp);
+        seedRoiPanel.setContainerOrMode(true);
         // resultMeasurePanel は openResultMeasureRoot() で bind する
         // 同じ画像に両パネルを bind すると refreshOverlaysFor() で overlay が競合するため
         SpinnerNumberModel model = (SpinnerNumberModel) channelSpinner.getModel();
@@ -301,8 +301,8 @@ public final class WorkflowWindow extends JFrame {
         if ((Integer) model.getValue() > nCh) model.setValue(nCh);
         seedTab.updateImage(imp);
         segmentationTab.updateImage(imp);
-        syncSharedParamsToTabs();
         refreshZProjCombo();
+        syncSharedParamsToTabs();
         setStatus(targetChanged
             ? "Bound: " + imp.getTitle() + "  |  Project cleared for target image change."
             : "Bound: " + imp.getTitle());
@@ -335,6 +335,27 @@ public final class WorkflowWindow extends JFrame {
         segmentationTab.setExternalChannel(ch);
         seedTab.setExternalZProjTitle(zproj);
         segmentationTab.setExternalZProjTitle(zproj);
+        syncSeedEditSubImage();
+    }
+
+    private void syncSeedEditSubImage() {
+        ImagePlus main = controller.getSession().getBoundImage();
+        if (main == null) {
+            seedRoiPanel.clearSubBindImage();
+            return;
+        }
+        Object selected = zprojCombo.getSelectedItem();
+        String title = selected != null ? selected.toString() : null;
+        if (title == null || title.equals("None")) {
+            seedRoiPanel.clearSubBindImage();
+            return;
+        }
+        ImagePlus sub = WindowManager.getImage(title);
+        if (sub == null || sub == main) {
+            seedRoiPanel.clearSubBindImage();
+            return;
+        }
+        seedRoiPanel.setSubBindImage(sub);
     }
 
     private void refreshZProjCombo() {
