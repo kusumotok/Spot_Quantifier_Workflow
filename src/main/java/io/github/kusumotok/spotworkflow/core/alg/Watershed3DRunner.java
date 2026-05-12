@@ -45,6 +45,8 @@ public class Watershed3DRunner {
             false  // getDams=false: fill entire domain without treating background as implicit seed
         );
         checkCancelled(shouldCancel);
+        maskLabelsToDomain(labelStack, domainStack, shouldCancel);
+        checkCancelled(shouldCancel);
 
         ImagePlus labelImage = new ImagePlus(
             imp.getShortTitle() + "-labels-3D",
@@ -52,6 +54,24 @@ public class Watershed3DRunner {
         );
 
         return new SegmentationResult3D(labelImage);
+    }
+
+    private static void maskLabelsToDomain(ImageStack labelStack, ImageStack domainStack,
+                                           BooleanSupplier shouldCancel) {
+        int w = labelStack.getWidth();
+        int h = labelStack.getHeight();
+        int d = labelStack.getSize();
+        for (int z = 1; z <= d; z++) {
+            checkCancelled(shouldCancel);
+            ImageProcessor labelIp = labelStack.getProcessor(z);
+            ImageProcessor domainIp = domainStack.getProcessor(z);
+            for (int y = 0; y < h; y++) {
+                checkCancelled(shouldCancel);
+                for (int x = 0; x < w; x++) {
+                    if (domainIp.get(x, y) == 0) labelIp.putPixelValue(x, y, 0);
+                }
+            }
+        }
     }
 
     private ImageStack invertIntensity(ImageStack stack, BooleanSupplier shouldCancel) {

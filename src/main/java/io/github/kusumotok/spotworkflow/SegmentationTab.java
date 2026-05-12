@@ -97,6 +97,7 @@ public final class SegmentationTab extends JPanel {
     private final JCheckBox  previewNoiseCheck  = new JCheckBox("Hide preview noise <", false);
     private final JTextField previewNoiseField  = numField("0.0");
     private final JSlider    previewNoiseSlider = new JSlider(0, 1000, 0);
+    private final JCheckBox  showRejectedSeedCheck = new JCheckBox("Show filtered-out / excluded ROIs", true);
     final JButton btnMakeSeedRoi    = new JButton("Make / Update Seed ROI");
     final JButton btnMakeResultRoi  = new JButton("Make Result ROI");
     private final JButton btnManualInclude = new JButton("Manual Include");
@@ -381,10 +382,18 @@ public final class SegmentationTab extends JPanel {
         JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         actionRow.setAlignmentX(LEFT_ALIGNMENT);
         actionRow.add(btnApply); actionRow.add(btnCancel); actionRow.add(btnClearPreview);
-        actionRow.add(previewCountLabel);
+        Dimension statusSize = new Dimension(360, previewCountLabel.getPreferredSize().height + 4);
+        previewCountLabel.setPreferredSize(statusSize);
+        previewCountLabel.setMinimumSize(statusSize);
+        previewCountLabel.setMaximumSize(statusSize);
+        previewCountLabel.setAlignmentX(LEFT_ALIGNMENT);
 
         p.add(modeRow);
         if (mode == Mode.SEED) {
+            JPanel rejectedRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+            rejectedRow.setAlignmentX(LEFT_ALIGNMENT);
+            rejectedRow.add(showRejectedSeedCheck);
+            p.add(rejectedRow);
             JPanel noiseRow = new JPanel(new BorderLayout(6, 0));
             noiseRow.setAlignmentX(LEFT_ALIGNMENT);
             noiseRow.add(previewNoiseCheck, BorderLayout.WEST);
@@ -394,6 +403,7 @@ public final class SegmentationTab extends JPanel {
             p.add(noiseRow);
         }
         p.add(actionRow);
+        p.add(previewCountLabel);
         p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
         return p;
     }
@@ -567,7 +577,7 @@ public final class SegmentationTab extends JPanel {
         previewNoiseCheck.addActionListener(e -> {
             previewNoiseField.setEnabled(previewNoiseCheck.isSelected());
             previewNoiseSlider.setEnabled(previewNoiseCheck.isSelected());
-            onSizeFilterChanged();
+            onPreviewDisplayChanged();
         });
         previewNoiseField.addActionListener(e -> commitPreviewNoiseField());
         previewNoiseField.addFocusListener(new FocusAdapter() {
@@ -578,8 +588,9 @@ public final class SegmentationTab extends JPanel {
             syncing = true;
             previewNoiseField.setText(formatVolume(sliderToVolume(previewNoiseSlider)));
             syncing = false;
-            onSizeFilterChanged();
+            onPreviewDisplayChanged();
         });
+        showRejectedSeedCheck.addActionListener(e -> onPreviewDisplayChanged());
         connectivityBox.addActionListener(e -> onParamsChanged());
         fillHolesCheck.addActionListener(e -> onParamsChanged());
         conflictMaxBtn.addActionListener(e -> onParamsChanged());
@@ -603,7 +614,7 @@ public final class SegmentationTab extends JPanel {
                 renderPreview(currentZPlane());
                 renderSelectedZProjOverlay();
             }
-            else if (currentImage != null) previewCountLabel.setText("Press Apply to update");
+            else if (currentImage != null) setPreviewStatus("Press Apply to update");
         });
         modeRoiLight.addActionListener(e -> {
             updateEnabled();
@@ -611,7 +622,7 @@ public final class SegmentationTab extends JPanel {
                 renderPreview(currentZPlane());
                 renderSelectedZProjOverlay();
             }
-            else if (currentImage != null) previewCountLabel.setText("Press Apply to update");
+            else if (currentImage != null) setPreviewStatus("Press Apply to update");
         });
 
         // Color pickers
@@ -695,7 +706,7 @@ public final class SegmentationTab extends JPanel {
         updateManualEditGuardState();
         clearPreviewCache();
         if (!modeOff.isSelected()) {
-            previewCountLabel.setText("Press Apply to update");
+            setPreviewStatus("Press Apply to update");
         }
     }
 
@@ -705,7 +716,7 @@ public final class SegmentationTab extends JPanel {
             manualExcludeLabels.clear();
             updateManualButtonState();
             updateManualEditGuardState();
-            previewCountLabel.setText("Updating size filter...");
+            setPreviewStatus("Updating size filter...");
             sizeFilterDebounceTimer.restart();
             return;
         }
@@ -729,7 +740,13 @@ public final class SegmentationTab extends JPanel {
         syncing = true;
         previewNoiseSlider.setValue(volumeToSlider(parseDoubleOrDefault(previewNoiseField.getText(), 0.0)));
         syncing = wasSyncing;
-        onSizeFilterChanged();
+        onPreviewDisplayChanged();
+    }
+
+    private void onPreviewDisplayChanged() {
+        if (mode == Mode.SEED && cachedSeedRawRoisByLabel != null && cachedSeedVoxelCounts != null) {
+            rebuildSeedPreviewFromSizeFilter();
+        }
     }
 
     // ── Preview: apply ─────────────────────────────────────────────────
@@ -760,7 +777,7 @@ public final class SegmentationTab extends JPanel {
         cancelRequested.set(false);
         int gen = previewGen.incrementAndGet();
         setPreviewBusy(true);
-        previewCountLabel.setText("Computing...");
+        setPreviewStatus("Computing...");
 
         Calibration cal = currentImage.getCalibration();
         double vw = cal.pixelWidth  > 0 ? cal.pixelWidth  : 1.0;
@@ -769,21 +786,23 @@ public final class SegmentationTab extends JPanel {
         final ImagePlus channelImg  = extractChannel(currentImage, params.channel);
         final boolean   ownsChannel = channelImg != currentImage;
 
-        new SwingWorker<PreviewResult, Void>() {
+        new SwingWorker<PreviewResult, String>() {
             @Override
             protected PreviewResult doInBackground() {
                 try {
+                    publish(mode == Mode.SEED ? "Computing 3D seed components..." : "Computing 3D segmentation...");
                     SeededQuantifier3D.SeededResult seeded = seedLabelImage != null
                         ? SeededQuantifier3D.computeFromSeedLabels(
                             channelImg, seedLabelImage, params.areaThreshold,
-                            params.toQuantifierParams(), params.areaEnabled, null, cancelRequested::get)
+                            params.toQuantifierParams(), params.areaEnabled, this::publish, cancelRequested::get)
                         : SeededQuantifier3D.compute(
                             channelImg, params.areaThreshold, params.seedThreshold,
                             params.toQuantifierParams(), vw * vh * vd, params.areaEnabled,
-                            null, cancelRequested::get);
+                            this::publish, cancelRequested::get);
                     if (seeded == null || seeded.finalSeg == null || seeded.finalSeg.labelImage == null) {
                         return null;
                     }
+                    publish("Converting 3D labels to ROI outlines...");
                     RoiExporter3D exporter = new RoiExporter3D();
                     Map<Integer, List<Roi>> finalRois = exporter.exportToRoiListsByLabel(
                         seeded.finalSeg.labelImage, null, currentImage, params.channel);
@@ -804,6 +823,10 @@ public final class SegmentationTab extends JPanel {
                 }
             }
             @Override
+            protected void process(List<String> chunks) {
+                if (!chunks.isEmpty()) setPreviewStatus(chunks.get(chunks.size() - 1));
+            }
+            @Override
             protected void done() {
                 if (previewGen.get() != gen) { setPreviewBusy(false); return; }
                 setPreviewBusy(false);
@@ -812,7 +835,7 @@ public final class SegmentationTab extends JPanel {
                     boolean noAccepted = result == null || result.finalSliceRois == null || result.finalSliceRois.isEmpty();
                     boolean noRejected = result == null || result.seedSliceRois == null || result.seedSliceRois.isEmpty();
                     if (result == null || (mode == Mode.SEED ? (noAccepted && noRejected) : noAccepted)) {
-                        previewCountLabel.setText("No spots found.");
+                        setPreviewStatus("No spots found.");
                         return;
                     }
                     cachedFinalRoisByZ = organizeByZ(result.finalSliceRois);
@@ -837,15 +860,15 @@ public final class SegmentationTab extends JPanel {
                     int n = result.finalSliceRois.size();
                     if (mode == Mode.SEED && result.seedSliceRois != null && !result.seedSliceRois.isEmpty()) {
                         int rejected = result.seedSliceRois.size();
-                        previewCountLabel.setText(n + " kept, " + rejected + " filtered out");
+                        setPreviewStatus(n + " kept, " + rejected + " filtered out");
                     } else {
-                        previewCountLabel.setText(n + " spot" + (n != 1 ? "s" : ""));
+                        setPreviewStatus(n + " spot" + (n != 1 ? "s" : ""));
                     }
                 } catch (CancellationException e) {
-                    previewCountLabel.setText("Cancelled.");
+                    setPreviewStatus("Cancelled.");
                 } catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
-                    previewCountLabel.setText("Error: " + cause.getMessage());
+                    setPreviewStatus("Error: " + cause.getMessage());
                 }
             }
         }.execute();
@@ -858,16 +881,18 @@ public final class SegmentationTab extends JPanel {
 
         Overlay overlay = new Overlay();
         if (mode == Mode.SEED) {
-            addRoisToOverlay(overlay, cachedSeedRoisByZ != null ? cachedSeedRoisByZ.get(zPlane) : null, seedColor);
+            if (showRejectedSeedCheck.isSelected()) {
+                addRoisToOverlay(overlay, cachedSeedRoisByZ != null ? cachedSeedRoisByZ.get(zPlane) : null, seedColor);
+            }
             addRoisToOverlay(overlay, cachedFinalRoisByZ.get(zPlane), resultColor);
             if (manualHoverLabel != null && !manualHoverOnZProj) {
                 addRoisToOverlay(overlay, filterRoisForZ(cachedSeedRawRoisByLabel.get(manualHoverLabel), zPlane), MANUAL_HOVER_COLOR);
             }
         } else {
-            addRoisToOverlay(overlay, cachedFinalRoisByZ.get(zPlane), resultColor);
             if (cachedSeedRoisByZ != null) {
                 addRoisToOverlay(overlay, cachedSeedRoisByZ.get(zPlane), seedColor);
             }
+            addRoisToOverlay(overlay, cachedFinalRoisByZ.get(zPlane), resultColor);
         }
 
         currentImage.setOverlay(overlay);
@@ -893,16 +918,16 @@ public final class SegmentationTab extends JPanel {
             }
         } else {
             if (mode == Mode.SEED) {
-                addRoisToOverlay(overlay, cachedZProjSeedRois, seedColor);
+                if (showRejectedSeedCheck.isSelected()) addRoisToOverlay(overlay, cachedZProjSeedRois, seedColor);
                 addRoisToOverlay(overlay, cachedZProjResultRois, resultColor);
                 if (manualHoverLabel != null && manualHoverOnZProj) {
                     addRoisToOverlay(overlay, computeZProjRoisForLabel(manualHoverLabel), MANUAL_HOVER_COLOR);
                 }
             } else {
-                addRoisToOverlay(overlay, cachedZProjResultRois, resultColor);
                 if (cachedZProjSeedRois != null) {
                     addRoisToOverlay(overlay, cachedZProjSeedRois, seedColor);
                 }
+                addRoisToOverlay(overlay, cachedZProjResultRois, resultColor);
             }
         }
 
@@ -1004,8 +1029,6 @@ public final class SegmentationTab extends JPanel {
         Set<Integer> beforeIds = currentImageIdSet();
         IJ.run(currentImage, "Z Project...", "projection=[Max Intensity]");
         ImagePlus result = findNewImage(beforeIds);
-        if (result == null && WindowManager.getCurrentImage() != currentImage)
-            result = WindowManager.getCurrentImage();
         refreshZProjCombo();
         if (result != null && result != currentImage) {
             zprojSyncing = true;
@@ -1425,7 +1448,7 @@ public final class SegmentationTab extends JPanel {
         Map<Integer, List<Roi>> rejected = new HashMap<Integer, List<Roi>>();
         if (rawRois == null || rawRois.isEmpty()) return rejected;
         Set<Integer> acceptedLabels = acceptedRois != null ? acceptedRois.keySet() : Collections.emptySet();
-        Double previewMin = previewNoiseCheck.isSelected()
+        Double previewMin = previewNoiseCheck.isSelected() && showRejectedSeedCheck.isSelected()
             ? effectiveMinFilter(parseDoubleOrDefault(previewNoiseField.getText(), sizeSliderMinVolume))
             : null;
         for (Map.Entry<Integer, List<Roi>> entry : rawRois.entrySet()) {
@@ -1460,7 +1483,7 @@ public final class SegmentationTab extends JPanel {
             if (manualExcludeLabels.contains(entry.getKey())) keep = false;
             if (keep) {
                 accepted.put(entry.getKey(), entry.getValue());
-            } else if (previewMin == null || vol >= previewMin) {
+            } else if (showRejectedSeedCheck.isSelected() && (previewMin == null || vol >= previewMin)) {
                 rejected.put(entry.getKey(), entry.getValue());
             } else {
                 hiddenPreviewNoise++;
@@ -1476,14 +1499,14 @@ public final class SegmentationTab extends JPanel {
         renderPreview(currentZPlane());
         renderSelectedZProjOverlay();
         updateManualButtonState();
-        previewCountLabel.setText(accepted.size() + " kept, " + rejected.size()
+        setPreviewStatus(accepted.size() + " kept, " + rejected.size()
             + " filtered out" + (hiddenPreviewNoise > 0 ? ", " + hiddenPreviewNoise + " hidden" : ""));
         return true;
     }
 
     private void toggleManualPickMode(ManualPickMode mode) {
         if (cachedSeedRawRoisByLabel == null || cachedSeedRawRoisByLabel.isEmpty()) {
-            previewCountLabel.setText("Press Apply before manual picking.");
+            setPreviewStatus("Press Apply before manual picking.");
             return;
         }
         if (manualPickMode == mode) {
@@ -1567,7 +1590,6 @@ public final class SegmentationTab extends JPanel {
         }
         rebuildSeedPreviewFromSizeFilter();
         updateManualEditGuardState();
-        if (!e.isShiftDown()) uninstallManualPickMode();
         e.consume();
     }
 
@@ -1682,9 +1704,10 @@ public final class SegmentationTab extends JPanel {
         maxVolCheck.setEnabled(!locked);
         maxVolField.setEnabled(!locked && currentImage != null && maxVolCheck.isSelected());
         maxVolSlider.setEnabled(!locked && currentImage != null && maxVolCheck.isSelected());
-        previewNoiseCheck.setEnabled(!locked);
-        previewNoiseField.setEnabled(!locked && previewNoiseCheck.isSelected());
-        previewNoiseSlider.setEnabled(!locked && previewNoiseCheck.isSelected());
+        showRejectedSeedCheck.setEnabled(true);
+        previewNoiseCheck.setEnabled(true);
+        previewNoiseField.setEnabled(previewNoiseCheck.isSelected());
+        previewNoiseSlider.setEnabled(previewNoiseCheck.isSelected());
         sizeFilterGuardPanel.setVisible(locked);
         seedThresholdSection.setToolTipText(locked ? "Clear manual edits before changing threshold." : null);
         minVolRow.setToolTipText(locked ? "Clear manual edits before changing size filter." : null);
@@ -1729,7 +1752,13 @@ public final class SegmentationTab extends JPanel {
     private static Roi cloneForPreviewOverlay(Roi roi) {
         Roi clone = (Roi) roi.clone();
         clone.setPosition(0);
+        clone.setPosition(0, 0, 0);
         return clone;
+    }
+
+    private void setPreviewStatus(String text) {
+        previewCountLabel.setText(shortStatus(text));
+        previewCountLabel.setToolTipText(text == null || text.isEmpty() ? null : text);
     }
 
     private static Set<Integer> currentImageIdSet() {
@@ -1805,5 +1834,12 @@ public final class SegmentationTab extends JPanel {
     private static double parseDoubleOrDefault(String s, double fallback) {
         if (s == null || s.trim().isEmpty()) return fallback;
         try { return Double.parseDouble(s.trim()); } catch (NumberFormatException e) { return fallback; }
+    }
+
+    private static String shortStatus(String text) {
+        if (text == null) return "";
+        String s = text.trim();
+        int max = 80;
+        return s.length() <= max ? s : s.substring(0, max - 3) + "...";
     }
 }

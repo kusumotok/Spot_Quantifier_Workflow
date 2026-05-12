@@ -265,8 +265,8 @@ public final class WorkflowWindow extends JFrame {
             case 2: // Area / Result: 3D + Z-proj area preview
             case 3: // Measurement: keep area preview visible
                 seedTab.setPreviewActive(false, false);
-                segmentationTab.setPreviewActive(true, true);
                 seedTab.clearOverlayOnly();
+                segmentationTab.setPreviewActive(true, true);
                 break;
             default:
                 seedTab.setPreviewActive(false, false);

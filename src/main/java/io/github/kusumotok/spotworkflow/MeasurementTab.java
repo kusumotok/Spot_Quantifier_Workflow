@@ -19,7 +19,6 @@ public final class MeasurementTab extends JPanel {
     // ── Output ────────────────────────────────────────────────────────
     private final JCheckBox saveCsvCheck    = new JCheckBox("Save CSV to result folder", true);
     private final JCheckBox showTableCheck  = new JCheckBox("Show ResultsTable",          false);
-    private final JCheckBox measureAllCheck = new JCheckBox("Measure all objects (ignore ROI Explorer selection)", true);
 
     // ── Columns ───────────────────────────────────────────────────────
     // LinkedHashMap preserves display order
@@ -44,10 +43,8 @@ public final class MeasurementTab extends JPanel {
             BorderFactory.createEtchedBorder(), "Output"));
         p.setAlignmentX(LEFT_ALIGNMENT);
 
-        measureAllCheck.setAlignmentX(LEFT_ALIGNMENT);
         saveCsvCheck.setAlignmentX(LEFT_ALIGNMENT);
         showTableCheck.setAlignmentX(LEFT_ALIGNMENT);
-        p.add(measureAllCheck);
         p.add(saveCsvCheck);
         p.add(showTableCheck);
 
@@ -55,6 +52,7 @@ public final class MeasurementTab extends JPanel {
         actionRow.setAlignmentX(LEFT_ALIGNMENT);
         actionRow.add(btnMeasure);
         p.add(actionRow);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
         return p;
     }
 
@@ -93,6 +91,7 @@ public final class MeasurementTab extends JPanel {
                 columnChecks.put(col, cb);
                 row.add(cb);
             }
+            row.setMaximumSize(new Dimension(Integer.MAX_VALUE, row.getPreferredSize().height));
             p.add(row);
         }
 
@@ -108,6 +107,7 @@ public final class MeasurementTab extends JPanel {
         ctrlRow.add(btnNone);
         p.add(Box.createVerticalStrut(2));
         p.add(ctrlRow);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
 
         return p;
     }
@@ -131,7 +131,7 @@ public final class MeasurementTab extends JPanel {
             .useProfile(new XyzObjectProfile(enabled))
             .withEnabledColumns(enabled)
             .withShowResultsTable(showTableCheck.isSelected())
-            .withMeasureAll(measureAllCheck.isSelected());
+            .withMeasureAll(true);
         if (saveCsvCheck.isSelected() && csvOutputPath != null) {
             req = req.withCsvOutput(csvOutputPath);
         }
