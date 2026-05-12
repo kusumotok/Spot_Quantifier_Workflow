@@ -382,7 +382,7 @@ public final class SegmentationTab extends JPanel {
         JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         actionRow.setAlignmentX(LEFT_ALIGNMENT);
         actionRow.add(btnApply); actionRow.add(btnCancel); actionRow.add(btnClearPreview);
-        Dimension statusSize = new Dimension(360, previewCountLabel.getPreferredSize().height + 4);
+        Dimension statusSize = new Dimension(360, Math.max(24, previewCountLabel.getPreferredSize().height + 10));
         previewCountLabel.setPreferredSize(statusSize);
         previewCountLabel.setMinimumSize(statusSize);
         previewCountLabel.setMaximumSize(statusSize);
