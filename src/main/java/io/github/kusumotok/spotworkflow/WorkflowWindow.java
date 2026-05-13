@@ -467,11 +467,12 @@ public final class WorkflowWindow extends JFrame {
         syncSharedParamsToTabs();
         Path project = ensureProjectFolder(image);
         if (project == null) return;
+        SegmentationParams params = currentWorkflowParams();
         if (seedTab.hasCurrentSeedRoiCache()) {
-            runSeedRoiFromCache(seedTab.getParams(), seedTab.getCurrentSeedRoiObjects(), project);
+            runSeedRoiFromCache(params, seedTab.getCurrentSeedRoiObjects(), project);
             return;
         }
-        runSeedRoi(image, seedTab.getParams(), project);
+        runSeedRoi(image, params, project);
     }
 
     private void cmdMakeResultRoi() {
@@ -480,10 +481,7 @@ public final class WorkflowWindow extends JFrame {
         syncSharedParamsToTabs();
         Path project = ensureProjectFolder(image);
         if (project == null) return;
-        SegmentationParams params = segmentationTab.getParams();
-        SegmentationParams seedParams = seedTab.getParams();
-        params.saveMode = seedParams.saveMode;
-        params.resultFolderPattern = seedParams.resultFolderPattern;
+        SegmentationParams params = currentWorkflowParams();
         Path seedRoot = seedRoiPanel.hasLoadedRoot()
             ? seedRoiPanel.getCurrentRoot()
             : controller.getSession().getSeedRoiRoot();
@@ -523,10 +521,7 @@ public final class WorkflowWindow extends JFrame {
         syncSharedParamsToTabs();
         project = ensureProjectFolder(image);
         if (project == null) return;
-        SegmentationParams params = segmentationTab.getParams();
-        SegmentationParams seedParams = seedTab.getParams();
-        params.saveMode = seedParams.saveMode;
-        params.resultFolderPattern = seedParams.resultFolderPattern;
+        SegmentationParams params = currentWorkflowParams();
         Path seedRoot = seedRoiPanel.hasLoadedRoot()
             ? seedRoiPanel.getCurrentRoot()
             : session.getSeedRoiRoot();
@@ -800,24 +795,41 @@ public final class WorkflowWindow extends JFrame {
 
     private void savePersistentSettings() {
         WorkflowPreferences prefs = new WorkflowPreferences();
-        SegmentationParams seedParams = seedTab.getParams();
-        SegmentationParams areaParams = segmentationTab.getParams();
+        SegmentationParams params = currentWorkflowParams();
         prefs.preferredChannel = (Integer) channelSpinner.getValue();
-        prefs.params.seedThreshold = seedParams.seedThreshold;
-        prefs.params.areaThreshold = areaParams.areaThreshold;
-        prefs.params.areaEnabled = areaParams.areaEnabled;
-        prefs.params.minVolUm3 = seedParams.minVolUm3;
-        prefs.params.maxVolUm3 = seedParams.maxVolUm3;
-        prefs.params.connectivity = areaParams.connectivity;
-        prefs.params.fillHoles = areaParams.fillHoles;
-        prefs.params.saveMode = seedParams.saveMode;
-        prefs.params.resultFolderPattern = seedParams.resultFolderPattern;
+        prefs.params.seedThreshold = params.seedThreshold;
+        prefs.params.areaThreshold = params.areaThreshold;
+        prefs.params.areaEnabled = params.areaEnabled;
+        prefs.params.minVolUm3 = params.minVolUm3;
+        prefs.params.maxVolUm3 = params.maxVolUm3;
+        prefs.params.connectivity = params.connectivity;
+        prefs.params.fillHoles = params.fillHoles;
+        prefs.params.saveMode = params.saveMode;
+        prefs.params.resultFolderPattern = params.resultFolderPattern;
         prefs.seedPreview.copyFrom(seedTab.getPreviewSettings());
         prefs.areaPreview.copyFrom(segmentationTab.getPreviewSettings());
         prefs.measurementSaveCsv = measurementTab.isSaveCsvSelected();
         prefs.measurementShowTable = measurementTab.isShowTableSelected();
         prefs.measurementColumns = measurementTab.getSelectedColumns();
         prefs.save();
+    }
+
+    private SegmentationParams currentWorkflowParams() {
+        SegmentationParams seedParams = seedTab.getParams();
+        SegmentationParams areaParams = segmentationTab.getParams();
+        SegmentationParams params = new SegmentationParams();
+        params.seedThreshold = seedParams.seedThreshold;
+        params.areaThreshold = areaParams.areaThreshold;
+        params.areaEnabled = areaParams.areaEnabled;
+        params.minVolUm3 = seedParams.minVolUm3;
+        params.maxVolUm3 = seedParams.maxVolUm3;
+        params.connectivity = areaParams.connectivity;
+        params.fillHoles = areaParams.fillHoles;
+        params.areaConflictMode = areaParams.areaConflictMode;
+        params.channel = (Integer) channelSpinner.getValue();
+        params.saveMode = seedParams.saveMode;
+        params.resultFolderPattern = seedParams.resultFolderPattern;
+        return params;
     }
 
     private Path resolveBaseDir(ImagePlus image) {
