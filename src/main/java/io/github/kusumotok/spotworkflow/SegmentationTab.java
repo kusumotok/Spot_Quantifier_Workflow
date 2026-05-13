@@ -1751,8 +1751,13 @@ public final class SegmentationTab extends JPanel {
 
     private static Roi cloneForPreviewOverlay(Roi roi) {
         Roi clone = (Roi) roi.clone();
-        clone.setPosition(0);
-        clone.setPosition(0, 0, 0);
+        int z = roi.getZPosition();
+        if (z <= 0) z = roi.getPosition();
+        if (z > 0) {
+            clone.setPosition(0, z, 0);
+        } else {
+            clone.setPosition(0);
+        }
         return clone;
     }
 

@@ -258,14 +258,24 @@ public final class WorkflowWindow extends JFrame {
                 seedTab.setPreviewActive(false, false);
                 segmentationTab.setPreviewActive(false, false);
                 seedTab.clearOverlayOnly();
+                segmentationTab.clearOverlayOnly();
                 syncSeedEditSubImage();
                 if (seedRoiPanel.hasLoadedRoot()) seedRoiPanel.refreshOverlay();
                 break;
             case 2: // Area / Result: 3D + Z-proj area preview
-            case 3: // Measurement: keep area preview visible
                 seedTab.setPreviewActive(false, false);
                 seedTab.clearOverlayOnly();
                 segmentationTab.setPreviewActive(true, true);
+                break;
+            case 3: // Measurement: ROI Explorer owns result overlays
+                seedTab.setPreviewActive(false, false);
+                segmentationTab.setPreviewActive(false, false);
+                seedTab.clearOverlayOnly();
+                segmentationTab.clearOverlayOnly();
+                if (resultMeasurePanel.hasLoadedRoot()) {
+                    syncResultMeasureSubImage();
+                    resultMeasurePanel.refreshOverlay();
+                }
                 break;
             default:
                 seedTab.setPreviewActive(false, false);
@@ -293,6 +303,7 @@ public final class WorkflowWindow extends JFrame {
         controller.getSession().setBoundImage(imp);
         seedRoiPanel.setBindImage(imp);
         seedRoiPanel.setContainerOrMode(true);
+        seedRoiPanel.setProjectionMode(true, false, false);
         // resultMeasurePanel は openResultMeasureRoot() で bind する
         // 同じ画像に両パネルを bind すると refreshOverlaysFor() で overlay が競合するため
         SpinnerNumberModel model = (SpinnerNumberModel) channelSpinner.getModel();
@@ -336,26 +347,35 @@ public final class WorkflowWindow extends JFrame {
         seedTab.setExternalZProjTitle(zproj);
         segmentationTab.setExternalZProjTitle(zproj);
         syncSeedEditSubImage();
+        if (resultMeasurePanel.hasLoadedRoot()) syncResultMeasureSubImage();
     }
 
     private void syncSeedEditSubImage() {
+        syncSubImage(seedRoiPanel);
+    }
+
+    private void syncResultMeasureSubImage() {
+        syncSubImage(resultMeasurePanel);
+    }
+
+    private void syncSubImage(RoiExplorerPanel panel) {
         ImagePlus main = controller.getSession().getBoundImage();
         if (main == null) {
-            seedRoiPanel.clearSubBindImage();
+            panel.clearSubBindImage();
             return;
         }
         Object selected = zprojCombo.getSelectedItem();
         String title = selected != null ? selected.toString() : null;
         if (title == null || title.equals("None")) {
-            seedRoiPanel.clearSubBindImage();
+            panel.clearSubBindImage();
             return;
         }
         ImagePlus sub = WindowManager.getImage(title);
         if (sub == null || sub == main) {
-            seedRoiPanel.clearSubBindImage();
+            panel.clearSubBindImage();
             return;
         }
-        seedRoiPanel.setSubBindImage(sub);
+        panel.setSubBindImage(sub);
     }
 
     private void refreshZProjCombo() {
@@ -570,7 +590,12 @@ public final class WorkflowWindow extends JFrame {
         Path seedRoot = controller.getSession().getSeedRoiRoot();
         ImagePlus image = controller.getSession().getBoundImage();
         if (seedRoot != null && Files.isDirectory(seedRoot)) {
-            if (image != null) seedRoiPanel.setBindImage(image);
+            if (image != null) {
+                seedRoiPanel.setBindImage(image);
+                seedRoiPanel.setContainerOrMode(true);
+                seedRoiPanel.setProjectionMode(true, false, false);
+                syncSeedEditSubImage();
+            }
             seedRoiPanel.openFolder(seedRoot);
         }
     }
@@ -579,7 +604,12 @@ public final class WorkflowWindow extends JFrame {
         Path resultRoot = controller.getSession().getResultRoiRoot();
         ImagePlus image = controller.getSession().getBoundImage();
         if (resultRoot != null && Files.isDirectory(resultRoot)) {
-            if (image != null) resultMeasurePanel.setBindImage(image);
+            if (image != null) {
+                resultMeasurePanel.setBindImage(image);
+                resultMeasurePanel.setContainerOrMode(true);
+                resultMeasurePanel.setProjectionMode(true, false, false);
+                syncResultMeasureSubImage();
+            }
             resultMeasurePanel.openFolder(resultRoot);
         }
     }
@@ -666,6 +696,9 @@ public final class WorkflowWindow extends JFrame {
                     Path resultRoot = get();
                     controller.getSession().setResultRoiRoot(resultRoot);
                     resultMeasurePanel.setBindImage(image);
+                    resultMeasurePanel.setContainerOrMode(true);
+                    resultMeasurePanel.setProjectionMode(true, false, false);
+                    syncResultMeasureSubImage();
                     resultMeasurePanel.openFolder(resultRoot);
                     controller.setState(WorkflowController.State.READY);
                     setStatus("Result ROI saved: " + resultRoot);
