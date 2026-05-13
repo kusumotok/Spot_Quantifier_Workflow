@@ -686,8 +686,7 @@ public final class SegmentationTab extends JPanel {
             modeOff.setVisible(false);
             modeRoiLight.setVisible(false);
             modeRoi.setSelected(true);
-            areaEnabledCheck.setSelected(true);
-            areaEnabledCheck.setVisible(false);
+            areaEnabledCheck.setVisible(true);
         }
     }
 
@@ -1168,8 +1167,7 @@ public final class SegmentationTab extends JPanel {
         seedField.setText(String.valueOf(p.seedThreshold));
         areaSlider.setValue(clamp(p.areaThreshold, imgMin, imgMax));
         areaField.setText(String.valueOf(p.areaThreshold));
-        // AREA_RESULT モードでは常に area enabled（パラメータファイルの値に関わらず）
-        areaEnabledCheck.setSelected(mode == Mode.AREA_RESULT || p.areaEnabled);
+        areaEnabledCheck.setSelected(mode == Mode.SEED ? false : p.areaEnabled);
         minVolCheck.setSelected(p.minVolUm3 != null);
         minVolField.setText(p.minVolUm3 != null ? String.valueOf(p.minVolUm3) : "");
         minVolField.setEnabled(p.minVolUm3 != null);
@@ -1210,6 +1208,36 @@ public final class SegmentationTab extends JPanel {
         p.resultFolderPattern = resultPatternField.getText().trim();
         if (p.resultFolderPattern.isEmpty()) p.resultFolderPattern = "{name} result";
         return p;
+    }
+
+    public WorkflowPreferences.PreviewSettings getPreviewSettings() {
+        WorkflowPreferences.PreviewSettings settings = new WorkflowPreferences.PreviewSettings();
+        settings.hideNoise = previewNoiseCheck.isSelected();
+        settings.noiseVolume = parseDoubleOrDefault(previewNoiseField.getText(), 0.0);
+        settings.showRejected = showRejectedSeedCheck.isSelected();
+        settings.seedColor = seedColor;
+        settings.resultColor = resultColor;
+        return settings;
+    }
+
+    public void setPreviewSettings(WorkflowPreferences.PreviewSettings settings) {
+        if (settings == null) return;
+        syncing = true;
+        previewNoiseCheck.setSelected(settings.hideNoise);
+        previewNoiseField.setText(formatVolume(settings.noiseVolume));
+        previewNoiseField.setEnabled(settings.hideNoise);
+        previewNoiseSlider.setEnabled(settings.hideNoise);
+        previewNoiseSlider.setValue(volumeToSlider(settings.noiseVolume));
+        showRejectedSeedCheck.setSelected(settings.showRejected);
+        seedColor = settings.seedColor != null ? settings.seedColor : Color.CYAN;
+        resultColor = settings.resultColor != null ? settings.resultColor : Color.YELLOW;
+        btnSeedColor.setBackground(seedColor);
+        btnResultColor.setBackground(resultColor);
+        syncing = false;
+        if (cachedFinalRoisByZ != null) {
+            renderPreview(currentZPlane());
+            renderSelectedZProjOverlay();
+        }
     }
 
     public boolean hasCurrentSeedRoiCache() {

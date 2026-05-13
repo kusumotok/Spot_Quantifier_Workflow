@@ -35,12 +35,6 @@ public final class ParameterFileReader {
             p.connectivity = parseInt(map.get("CONNECTIVITY"), p.connectivity);
         if (map.containsKey("FILL_HOLES"))
             p.fillHoles = Boolean.parseBoolean(map.get("FILL_HOLES"));
-        if (map.containsKey("GAUSSIAN_BLUR"))
-            p.gaussianBlur = Boolean.parseBoolean(map.get("GAUSSIAN_BLUR"));
-        if (map.containsKey("GAUSS_XY"))
-            p.gaussXY = parseDouble(map.get("GAUSS_XY"), p.gaussXY);
-        if (map.containsKey("GAUSS_Z"))
-            p.gaussZ = parseDouble(map.get("GAUSS_Z"), p.gaussZ);
         if (map.containsKey("AREA_CONFLICT_MODE")) {
             String raw = map.get("AREA_CONFLICT_MODE");
             if ("split".equalsIgnoreCase(raw)) {
@@ -70,11 +64,6 @@ public final class ParameterFileReader {
 
     private static int parseInt(String s, int fallback) {
         try { return Integer.parseInt(s.trim()); }
-        catch (NumberFormatException e) { return fallback; }
-    }
-
-    private static double parseDouble(String s, double fallback) {
-        try { return Double.parseDouble(s.trim()); }
         catch (NumberFormatException e) { return fallback; }
     }
 

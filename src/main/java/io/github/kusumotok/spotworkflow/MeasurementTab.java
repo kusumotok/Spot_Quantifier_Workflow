@@ -137,4 +137,37 @@ public final class MeasurementTab extends JPanel {
         }
         return req;
     }
+
+    public boolean isSaveCsvSelected() {
+        return saveCsvCheck.isSelected();
+    }
+
+    public void setSaveCsvSelected(boolean selected) {
+        saveCsvCheck.setSelected(selected);
+    }
+
+    public boolean isShowTableSelected() {
+        return showTableCheck.isSelected();
+    }
+
+    public void setShowTableSelected(boolean selected) {
+        showTableCheck.setSelected(selected);
+    }
+
+    public Set<MeasurementColumn> getSelectedColumns() {
+        Set<MeasurementColumn> enabled = EnumSet.noneOf(MeasurementColumn.class);
+        for (Map.Entry<MeasurementColumn, JCheckBox> entry : columnChecks.entrySet()) {
+            if (entry.getValue().isSelected()) enabled.add(entry.getKey());
+        }
+        return enabled.isEmpty() ? MeasurementColumn.allEnabled() : enabled;
+    }
+
+    public void setSelectedColumns(Set<MeasurementColumn> columns) {
+        Set<MeasurementColumn> safe = columns == null || columns.isEmpty()
+            ? MeasurementColumn.allEnabled()
+            : columns;
+        for (Map.Entry<MeasurementColumn, JCheckBox> entry : columnChecks.entrySet()) {
+            entry.getValue().setSelected(safe.contains(entry.getKey()));
+        }
+    }
 }

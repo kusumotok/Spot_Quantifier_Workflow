@@ -39,11 +39,6 @@ public final class SegmentationParams {
         map.put("MAX_VOL_UM3",     maxVolUm3 != null ? String.valueOf(maxVolUm3) : "");
         map.put("CONNECTIVITY",    String.valueOf(connectivity));
         map.put("FILL_HOLES",      String.valueOf(fillHoles));
-        map.put("GAUSSIAN_BLUR",   String.valueOf(gaussianBlur));
-        if (gaussianBlur) {
-            map.put("GAUSS_XY", String.valueOf(gaussXY));
-            map.put("GAUSS_Z",  String.valueOf(gaussZ));
-        }
         map.put("AREA_CONFLICT_MODE", areaConflictMode.name().toLowerCase());
         map.put("SAVE_MODE",       saveMode.name().toLowerCase());
         return map;

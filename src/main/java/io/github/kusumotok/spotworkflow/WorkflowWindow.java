@@ -47,6 +47,7 @@ public final class WorkflowWindow extends JFrame {
     private final JButton           zprojBtn = new JButton("Max Proj");
     private final JTextField        projectField = new JTextField(18);
     private boolean                 comboSyncing = false;
+    private int                     preferredChannel = 1;
 
     // ── Tabs ──────────────────────────────────────────────────────────────────
     private final JTabbedPane tabs             = new JTabbedPane();
@@ -76,6 +77,7 @@ public final class WorkflowWindow extends JFrame {
         OpenViewRegistry.getInstance().unregister(resultMeasurePanel);
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         buildUI();
+        loadPersistentSettings();
         wireController();
         updateButtonStates();
         pack();
@@ -137,7 +139,10 @@ public final class WorkflowWindow extends JFrame {
         zprojCombo.addItem("None");
         zprojCombo.addActionListener(e -> syncSharedParamsToTabs());
         zprojBtn.addActionListener(e -> cmdCreateMaxProj());
-        channelSpinner.addChangeListener(e -> syncSharedParamsToTabs());
+        channelSpinner.addChangeListener(e -> {
+            preferredChannel = (Integer) channelSpinner.getValue();
+            syncSharedParamsToTabs();
+        });
         projectField.setEditable(false);
 
         gc.gridx = 0; gc.gridy = 0; gc.weightx = 0;
@@ -222,6 +227,7 @@ public final class WorkflowWindow extends JFrame {
         addWindowListener(new WindowAdapter() {
             @Override
             public void windowClosed(WindowEvent e) {
+                savePersistentSettings();
                 seedTab.onWindowClosing();          // free cache + remove ImageListener
                 segmentationTab.onWindowClosing();  // free cache + remove ImageListener
                 seedRoiPanel.cleanupPreview();
@@ -319,7 +325,8 @@ public final class WorkflowWindow extends JFrame {
         SpinnerNumberModel model = (SpinnerNumberModel) channelSpinner.getModel();
         int nCh = Math.max(1, imp.getNChannels());
         model.setMaximum(nCh);
-        if ((Integer) model.getValue() > nCh) model.setValue(nCh);
+        int safeChannel = Math.max(1, Math.min(preferredChannel, nCh));
+        if ((Integer) model.getValue() != safeChannel) model.setValue(safeChannel);
         seedTab.updateImage(imp);
         segmentationTab.updateImage(imp);
         refreshZProjCombo();
@@ -778,6 +785,40 @@ public final class WorkflowWindow extends JFrame {
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private String getStatus() { return statusLabel.getText(); }
+
+    private void loadPersistentSettings() {
+        WorkflowPreferences prefs = WorkflowPreferences.load();
+        preferredChannel = Math.max(1, prefs.preferredChannel);
+        seedTab.setParams(prefs.params);
+        segmentationTab.setParams(prefs.params);
+        seedTab.setPreviewSettings(prefs.seedPreview);
+        segmentationTab.setPreviewSettings(prefs.areaPreview);
+        measurementTab.setSaveCsvSelected(prefs.measurementSaveCsv);
+        measurementTab.setShowTableSelected(prefs.measurementShowTable);
+        measurementTab.setSelectedColumns(prefs.measurementColumns);
+    }
+
+    private void savePersistentSettings() {
+        WorkflowPreferences prefs = new WorkflowPreferences();
+        SegmentationParams seedParams = seedTab.getParams();
+        SegmentationParams areaParams = segmentationTab.getParams();
+        prefs.preferredChannel = (Integer) channelSpinner.getValue();
+        prefs.params.seedThreshold = seedParams.seedThreshold;
+        prefs.params.areaThreshold = areaParams.areaThreshold;
+        prefs.params.areaEnabled = areaParams.areaEnabled;
+        prefs.params.minVolUm3 = seedParams.minVolUm3;
+        prefs.params.maxVolUm3 = seedParams.maxVolUm3;
+        prefs.params.connectivity = areaParams.connectivity;
+        prefs.params.fillHoles = areaParams.fillHoles;
+        prefs.params.saveMode = seedParams.saveMode;
+        prefs.params.resultFolderPattern = seedParams.resultFolderPattern;
+        prefs.seedPreview.copyFrom(seedTab.getPreviewSettings());
+        prefs.areaPreview.copyFrom(segmentationTab.getPreviewSettings());
+        prefs.measurementSaveCsv = measurementTab.isSaveCsvSelected();
+        prefs.measurementShowTable = measurementTab.isShowTableSelected();
+        prefs.measurementColumns = measurementTab.getSelectedColumns();
+        prefs.save();
+    }
 
     private Path resolveBaseDir(ImagePlus image) {
         Path dir = seedTab.getEffectiveSaveBaseDir();
