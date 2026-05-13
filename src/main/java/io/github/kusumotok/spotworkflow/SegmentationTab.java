@@ -1004,20 +1004,27 @@ public final class SegmentationTab extends JPanel {
     private void installZWatcher() {
         if (zWatcher != null) ImagePlus.removeImageListener(zWatcher);
         if (currentImage == null) { zWatcher = null; return; }
-        final int[] lastZ = {-1};
+        final int[] lastCzt = {-1, -1, -1};
         zWatcher = new ImageListener() {
             @Override public void imageOpened(ImagePlus imp) {}
             @Override public void imageClosed(ImagePlus imp) {}
             @Override public void imageUpdated(ImagePlus imp) {
                 if (imp != currentImage) return;
+                int c = currentImage.getC();
                 int z = currentZPlane();
-                if (z != lastZ[0]) { lastZ[0] = z; updatePreviewForZChange(); }
+                int t = currentImage.getT();
+                if (c != lastCzt[0] || z != lastCzt[1] || t != lastCzt[2]) {
+                    lastCzt[0] = c;
+                    lastCzt[1] = z;
+                    lastCzt[2] = t;
+                    updatePreviewForPositionChange();
+                }
             }
         };
         ImagePlus.addImageListener(zWatcher);
     }
 
-    private void updatePreviewForZChange() {
+    private void updatePreviewForPositionChange() {
         if (!originalPreviewActive || modeOff.isSelected() || cachedFinalRoisByZ == null) return;
         SwingUtilities.invokeLater(() -> renderPreview(currentZPlane()));
     }
@@ -1751,13 +1758,7 @@ public final class SegmentationTab extends JPanel {
 
     private static Roi cloneForPreviewOverlay(Roi roi) {
         Roi clone = (Roi) roi.clone();
-        int z = roi.getZPosition();
-        if (z <= 0) z = roi.getPosition();
-        if (z > 0) {
-            clone.setPosition(0, z, 0);
-        } else {
-            clone.setPosition(0);
-        }
+        clone.setPosition(0);
         return clone;
     }
 
