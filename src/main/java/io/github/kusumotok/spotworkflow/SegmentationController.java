@@ -9,6 +9,7 @@ import io.github.kusumotok.spotworkflow.core.roi.RoiExporter3D;
 import io.github.kusumotok.spotworkflow.core.roi.SeedRoiReader;
 import io.github.kusumotok.spotworkflow.save.*;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -88,6 +89,7 @@ public final class SegmentationController {
         if (roisByLabel.isEmpty()) throw new RuntimeException("No seed objects found after filtering.");
 
         Path seedRoot = projectFolder.resolve("seed_rois");
+        backupSeedUpdateOutputs(projectFolder, progress);
         roiSaveService.saveRoisToRoot(seedRoot, new ArrayList<>(roisByLabel.values()), params.saveMode, true);
         paramWriter.update(projectFolder.resolve("parameters.txt"), params.toSeedParameterMap());
         return seedRoot;
@@ -100,6 +102,7 @@ public final class SegmentationController {
         }
         report(progress, "Saving edited seed ROI...");
         Path seedRoot = projectFolder.resolve("seed_rois");
+        backupSeedUpdateOutputs(projectFolder, progress);
         roiSaveService.saveRoisToRoot(seedRoot, objectRois, params.saveMode, true);
         paramWriter.update(projectFolder.resolve("parameters.txt"), params.toSeedParameterMap());
         return seedRoot;
@@ -178,5 +181,39 @@ public final class SegmentationController {
 
     private static void report(Consumer<String> progress, String msg) {
         if (progress != null) progress.accept(msg);
+    }
+
+    private void backupSeedUpdateOutputs(Path projectFolder, Consumer<String> progress) throws Exception {
+        if (projectFolder == null) return;
+        Path seedRoot = projectFolder.resolve("seed_rois");
+        Path resultRoot = projectFolder.resolve("result_rois");
+        Path paramsFile = projectFolder.resolve("parameters.txt");
+        boolean hasOutputs = Files.exists(seedRoot) || Files.exists(resultRoot) || Files.exists(paramsFile);
+        if (!hasOutputs) return;
+
+        Path oldRoot = projectFolder.resolve("_old");
+        Files.createDirectories(oldRoot);
+        Path backupDir = nextBackupDir(oldRoot, projectFolder);
+        Files.createDirectories(backupDir);
+        moveIfExists(seedRoot, backupDir.resolve("seed_rois"));
+        moveIfExists(resultRoot, backupDir.resolve("result_rois"));
+        moveIfExists(paramsFile, backupDir.resolve("parameters.txt"));
+        report(progress, "Moved previous project outputs to " + backupDir.getFileName());
+    }
+
+    private Path nextBackupDir(Path oldRoot, Path projectFolder) {
+        String projectName = projectFolder.getFileName() != null ? projectFolder.getFileName().toString() : "project";
+        String base = projectName + "_backup";
+        Path candidate = oldRoot.resolve(base);
+        int suffix = 2;
+        while (Files.exists(candidate)) {
+            candidate = oldRoot.resolve(base + "_" + suffix);
+            suffix++;
+        }
+        return candidate;
+    }
+
+    private static void moveIfExists(Path source, Path target) throws Exception {
+        if (Files.exists(source)) Files.move(source, target);
     }
 }

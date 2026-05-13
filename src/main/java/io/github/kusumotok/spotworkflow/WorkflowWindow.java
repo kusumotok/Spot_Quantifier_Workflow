@@ -49,6 +49,7 @@ public final class WorkflowWindow extends JFrame {
     private boolean                 comboSyncing = false;
     private int                     preferredChannel = 1;
     private boolean                 channelSyncing = false;
+    private ImageListener           targetImageListener;
 
     // ── Tabs ──────────────────────────────────────────────────────────────────
     private final JTabbedPane tabs             = new JTabbedPane();
@@ -127,7 +128,10 @@ public final class WorkflowWindow extends JFrame {
         imageCombo.addActionListener(e -> {
             if (comboSyncing) return;
             String title = (String) imageCombo.getSelectedItem();
-            if (title == null || title.isEmpty() || "None".equals(title)) return;
+            if (title == null || title.isEmpty() || "None".equals(title)) {
+                clearTargetImageAndProject("Target image cleared.");
+                return;
+            }
             ImagePlus imp = WindowManager.getImage(title);
             if (imp != null) bindImage(imp);
         });
@@ -215,6 +219,7 @@ public final class WorkflowWindow extends JFrame {
 
     private void wireController() {
         controller.addStateListener(this::updateButtonStates);
+        installTargetImageListener();
 
         tabs.addChangeListener(e -> {
             int current = tabs.getSelectedIndex();
@@ -236,6 +241,7 @@ public final class WorkflowWindow extends JFrame {
                 seedRoiPanel.onWindowClosing();
                 resultMeasurePanel.cleanupPreview();
                 resultMeasurePanel.onWindowClosing();
+                if (targetImageListener != null) ImagePlus.removeImageListener(targetImageListener);
             }
         });
     }
@@ -309,14 +315,7 @@ public final class WorkflowWindow extends JFrame {
         ImagePlus previous = controller.getSession().getBoundImage();
         boolean targetChanged = previous != null && previous != imp;
         if (targetChanged) {
-            controller.getSession().clearProject();
-            projectField.setText("");
-            projectField.setToolTipText(null);
-            seedTab.clearPreview();
-            segmentationTab.clearPreview();
-            seedRoiPanel.closeFolder();
-            resultMeasurePanel.closeFolder();
-            measurementTab.setOutputFolder(null);
+            clearProjectForTargetChange();
         }
         controller.getSession().setBoundImage(imp);
         seedRoiPanel.setBindImage(imp);
@@ -552,8 +551,13 @@ public final class WorkflowWindow extends JFrame {
         if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
 
         Path selected = chooser.getSelectedFile().toPath();
+        seedTab.clearPreview();
+        segmentationTab.clearPreview();
+        seedRoiPanel.closeFolder();
+        resultMeasurePanel.closeFolder();
         setProjectFolder(selected);
         openSeedRoiRoot();
+        openResultMeasureRoot();
 
         Path paramFile = selected.resolve("parameters.txt");
         if (Files.isRegularFile(paramFile)) {
@@ -584,16 +588,51 @@ public final class WorkflowWindow extends JFrame {
         Path baseDir = resolveBaseDir(image);
         if (baseDir == null) return null;
         try {
-            String pattern = seedTab.getParams().resultFolderPattern;
+            String pattern = currentWorkflowParams().resultFolderPattern;
             if (pattern.isEmpty()) pattern = "{name} result";
             String name = pattern.replace("{name}", image.getTitle().replaceAll("\\.[^.]+$", ""));
             project = folderService.createResultFolder(baseDir, name);
             setProjectFolder(project);
+            setStatus("New project: " + project);
             return project;
         } catch (Exception e) {
             setStatus("Could not create project folder: " + e.getMessage());
             return null;
         }
+    }
+
+    private void clearProjectForTargetChange() {
+        seedTab.clearPreview();
+        segmentationTab.clearPreview();
+        seedRoiPanel.closeFolder();
+        resultMeasurePanel.closeFolder();
+        setProjectFolder(null);
+    }
+
+    private void clearTargetImageAndProject(String status) {
+        controller.getSession().setBoundImage(null);
+        clearProjectForTargetChange();
+        seedTab.updateImage(null);
+        segmentationTab.updateImage(null);
+        if (status != null && !status.isEmpty()) setStatus(status);
+        updateButtonStates();
+    }
+
+    private void installTargetImageListener() {
+        targetImageListener = new ImageListener() {
+            @Override public void imageOpened(ImagePlus imp) {}
+            @Override public void imageUpdated(ImagePlus imp) {}
+            @Override public void imageClosed(ImagePlus imp) {
+                if (imp != controller.getSession().getBoundImage()) return;
+                SwingUtilities.invokeLater(() -> {
+                    comboSyncing = true;
+                    imageCombo.setSelectedItem("None");
+                    comboSyncing = false;
+                    clearTargetImageAndProject("Target image closed. Project cleared.");
+                });
+            }
+        };
+        ImagePlus.addImageListener(targetImageListener);
     }
 
     private void setProjectFolder(Path project) {
@@ -649,6 +688,8 @@ public final class WorkflowWindow extends JFrame {
                 try {
                     Path seedRoot = get();
                     controller.getSession().setSeedRoiRoot(seedRoot);
+                    controller.getSession().setResultRoiRoot(null);
+                    resultMeasurePanel.closeFolder();
                     openSeedRoiRoot();
                     tabs.setSelectedIndex(1);
                     controller.setState(WorkflowController.State.READY);
@@ -682,6 +723,8 @@ public final class WorkflowWindow extends JFrame {
                 try {
                     Path seedRoot = get();
                     controller.getSession().setSeedRoiRoot(seedRoot);
+                    controller.getSession().setResultRoiRoot(null);
+                    resultMeasurePanel.closeFolder();
                     openSeedRoiRoot();
                     tabs.setSelectedIndex(1);
                     controller.setState(WorkflowController.State.READY);

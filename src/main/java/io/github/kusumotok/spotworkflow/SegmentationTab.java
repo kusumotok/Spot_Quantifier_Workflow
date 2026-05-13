@@ -1143,6 +1143,13 @@ public final class SegmentationTab extends JPanel {
             clearPreview();
         }
         currentImage = image;
+        if (image == null) {
+            refreshZProjCombo();
+            if (saveBaseDir == null) updateSaveToDisplay();
+            updateEnabled();
+            installZWatcher();
+            return;
+        }
         updateUnit(image);
         refreshZProjCombo();
         if (saveBaseDir == null) updateSaveToDisplay(); // refresh hint with new image path
