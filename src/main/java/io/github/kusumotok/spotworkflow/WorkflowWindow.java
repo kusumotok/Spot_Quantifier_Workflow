@@ -251,10 +251,14 @@ public final class WorkflowWindow extends JFrame {
     private void applyPreviewPolicy(int current, int previous) {
         switch (current) {
             case 0: // Seed: 3D + Z-proj seed preview
+                seedRoiPanel.setOverlayEnabled(false);
+                resultMeasurePanel.setOverlayEnabled(false);
                 seedTab.setPreviewActive(true, true);
                 segmentationTab.setPreviewActive(false, false);
                 break;
             case 1: // Seed Edit: ROI Explorer owns both main and sub overlays
+                seedRoiPanel.setOverlayEnabled(true);
+                resultMeasurePanel.setOverlayEnabled(false);
                 seedTab.setPreviewActive(false, false);
                 segmentationTab.setPreviewActive(false, false);
                 seedTab.clearOverlayOnly();
@@ -263,11 +267,15 @@ public final class WorkflowWindow extends JFrame {
                 if (seedRoiPanel.hasLoadedRoot()) seedRoiPanel.refreshOverlay();
                 break;
             case 2: // Area / Result: 3D + Z-proj area preview
+                seedRoiPanel.setOverlayEnabled(false);
+                resultMeasurePanel.setOverlayEnabled(false);
                 seedTab.setPreviewActive(false, false);
                 seedTab.clearOverlayOnly();
                 segmentationTab.setPreviewActive(true, true);
                 break;
             case 3: // Measurement: ROI Explorer owns result overlays
+                seedRoiPanel.setOverlayEnabled(false);
+                resultMeasurePanel.setOverlayEnabled(true);
                 seedTab.setPreviewActive(false, false);
                 segmentationTab.setPreviewActive(false, false);
                 seedTab.clearOverlayOnly();
@@ -278,6 +286,8 @@ public final class WorkflowWindow extends JFrame {
                 }
                 break;
             default:
+                seedRoiPanel.setOverlayEnabled(false);
+                resultMeasurePanel.setOverlayEnabled(false);
                 seedTab.setPreviewActive(false, false);
                 segmentationTab.setPreviewActive(false, false);
                 break;
