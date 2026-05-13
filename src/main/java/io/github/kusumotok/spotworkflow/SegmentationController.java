@@ -89,7 +89,7 @@ public final class SegmentationController {
 
         Path seedRoot = projectFolder.resolve("seed_rois");
         roiSaveService.saveRoisToRoot(seedRoot, new ArrayList<>(roisByLabel.values()), params.saveMode, true);
-        paramWriter.write(projectFolder.resolve("parameters.txt"), params.toParameterMap());
+        paramWriter.update(projectFolder.resolve("parameters.txt"), params.toSeedParameterMap());
         return seedRoot;
     }
 
@@ -101,7 +101,7 @@ public final class SegmentationController {
         report(progress, "Saving edited seed ROI...");
         Path seedRoot = projectFolder.resolve("seed_rois");
         roiSaveService.saveRoisToRoot(seedRoot, objectRois, params.saveMode, true);
-        paramWriter.write(projectFolder.resolve("parameters.txt"), params.toParameterMap());
+        paramWriter.update(projectFolder.resolve("parameters.txt"), params.toSeedParameterMap());
         return seedRoot;
     }
 
@@ -131,7 +131,7 @@ public final class SegmentationController {
         // obj-003_split1 → result_rois/obj-003_split1 のように追跡できる
         Path resultRoot = projectFolder.resolve("result_rois");
         roiSaveService.saveRoisByNameMapping(resultRoot, roisByLabel, seedRead.nameToLabel, params.saveMode, true);
-        paramWriter.write(projectFolder.resolve("parameters.txt"), params.toParameterMap());
+        paramWriter.update(projectFolder.resolve("parameters.txt"), params.toAreaParameterMap());
         return resultRoot;
     }
 

@@ -2,9 +2,11 @@ package io.github.kusumotok.spotworkflow.save;
 
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 public final class ParameterFileWriter {
@@ -33,5 +35,28 @@ public final class ParameterFileWriter {
                 pw.println(entry.getKey() + "=" + value);
             }
         }
+    }
+
+    public void update(Path outputPath, Map<String, String> updates) throws IOException {
+        Map<String, String> merged = new LinkedHashMap<>();
+        SegmentationParams.putAllKnownKeys(merged);
+        merged.putAll(readExisting(outputPath));
+        for (Map.Entry<String, String> entry : updates.entrySet()) {
+            merged.put(entry.getKey(), entry.getValue());
+        }
+        write(outputPath, merged);
+    }
+
+    private Map<String, String> readExisting(Path path) throws IOException {
+        Map<String, String> map = new LinkedHashMap<>();
+        if (path == null || !Files.exists(path)) return map;
+        for (String line : Files.readAllLines(path, StandardCharsets.UTF_8)) {
+            line = line.trim();
+            if (line.startsWith("#") || line.isEmpty()) continue;
+            int eq = line.indexOf('=');
+            if (eq < 0) continue;
+            map.put(line.substring(0, eq).trim(), line.substring(eq + 1).trim());
+        }
+        return map;
     }
 }

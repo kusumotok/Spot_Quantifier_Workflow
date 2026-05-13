@@ -25,7 +25,7 @@ public final class ParameterFileReader {
             p.seedThreshold = parseInt(map.get("SEED_THRESHOLD"), p.seedThreshold);
         if (map.containsKey("AREA_THRESHOLD"))
             p.areaThreshold = parseInt(map.get("AREA_THRESHOLD"), p.areaThreshold);
-        if (map.containsKey("AREA_ENABLED"))
+        if (hasValue(map, "AREA_ENABLED"))
             p.areaEnabled = Boolean.parseBoolean(map.get("AREA_ENABLED"));
         if (map.containsKey("MIN_VOL_UM3"))
             p.minVolUm3 = parseDoubleOrNull(map.get("MIN_VOL_UM3"));
@@ -33,7 +33,7 @@ public final class ParameterFileReader {
             p.maxVolUm3 = parseDoubleOrNull(map.get("MAX_VOL_UM3"));
         if (map.containsKey("CONNECTIVITY"))
             p.connectivity = parseInt(map.get("CONNECTIVITY"), p.connectivity);
-        if (map.containsKey("FILL_HOLES"))
+        if (hasValue(map, "FILL_HOLES"))
             p.fillHoles = Boolean.parseBoolean(map.get("FILL_HOLES"));
         if (map.containsKey("AREA_CONFLICT_MODE")) {
             String raw = map.get("AREA_CONFLICT_MODE");
@@ -43,7 +43,7 @@ public final class ParameterFileReader {
                 IJ.log("[SpotQuantifier] WARN: unknown AREA_CONFLICT_MODE='" + raw + "', using MAX_OVERLAP");
             }
         }
-        if (map.containsKey("SAVE_MODE")) {
+        if (hasValue(map, "SAVE_MODE")) {
             try { p.saveMode = SaveMode.valueOf(map.get("SAVE_MODE").toUpperCase()); }
             catch (IllegalArgumentException ignored) {}
         }
@@ -71,5 +71,10 @@ public final class ParameterFileReader {
         if (s == null || s.trim().isEmpty()) return null;
         try { return Double.parseDouble(s.trim()); }
         catch (NumberFormatException e) { return null; }
+    }
+
+    private static boolean hasValue(Map<String, String> map, String key) {
+        String value = map.get(key);
+        return value != null && !value.trim().isEmpty();
     }
 }
