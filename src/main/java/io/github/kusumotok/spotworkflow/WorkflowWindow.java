@@ -325,7 +325,7 @@ public final class WorkflowWindow extends JFrame {
         SpinnerNumberModel model = (SpinnerNumberModel) channelSpinner.getModel();
         int nCh = Math.max(1, imp.getNChannels());
         model.setMaximum(nCh);
-        int safeChannel = Math.max(1, Math.min(preferredChannel, nCh));
+        int safeChannel = preferredChannel <= nCh ? Math.max(1, preferredChannel) : 1;
         if ((Integer) model.getValue() != safeChannel) model.setValue(safeChannel);
         seedTab.updateImage(imp);
         segmentationTab.updateImage(imp);
@@ -784,6 +784,9 @@ public final class WorkflowWindow extends JFrame {
     private void loadPersistentSettings() {
         WorkflowPreferences prefs = WorkflowPreferences.load();
         preferredChannel = Math.max(1, prefs.preferredChannel);
+        SpinnerNumberModel channelModel = (SpinnerNumberModel) channelSpinner.getModel();
+        channelModel.setMaximum(Math.max(1, preferredChannel));
+        channelSpinner.setValue(preferredChannel);
         seedTab.setParams(prefs.params);
         segmentationTab.setParams(prefs.params);
         seedTab.setPreviewSettings(prefs.seedPreview);
@@ -796,7 +799,7 @@ public final class WorkflowWindow extends JFrame {
     private void savePersistentSettings() {
         WorkflowPreferences prefs = new WorkflowPreferences();
         SegmentationParams params = currentWorkflowParams();
-        prefs.preferredChannel = (Integer) channelSpinner.getValue();
+        prefs.preferredChannel = Math.max(1, preferredChannel);
         prefs.params.seedThreshold = params.seedThreshold;
         prefs.params.areaThreshold = params.areaThreshold;
         prefs.params.areaEnabled = params.areaEnabled;
