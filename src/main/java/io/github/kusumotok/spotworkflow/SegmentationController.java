@@ -188,7 +188,9 @@ public final class SegmentationController {
         Path seedRoot = projectFolder.resolve("seed_rois");
         Path resultRoot = projectFolder.resolve("result_rois");
         Path paramsFile = projectFolder.resolve("parameters.txt");
-        boolean hasOutputs = Files.exists(seedRoot) || Files.exists(resultRoot) || Files.exists(paramsFile);
+        Path measurementCsv = projectFolder.resolve("measurement.csv");
+        boolean hasOutputs = Files.exists(seedRoot) || Files.exists(resultRoot)
+            || Files.exists(paramsFile) || Files.exists(measurementCsv);
         if (!hasOutputs) return;
 
         Path oldRoot = projectFolder.resolve("_old");
@@ -198,6 +200,7 @@ public final class SegmentationController {
         moveIfExists(seedRoot, backupDir.resolve("seed_rois"));
         moveIfExists(resultRoot, backupDir.resolve("result_rois"));
         moveIfExists(paramsFile, backupDir.resolve("parameters.txt"));
+        moveIfExists(measurementCsv, backupDir.resolve("measurement.csv"));
         report(progress, "Moved previous project outputs to " + backupDir.getFileName());
     }
 
