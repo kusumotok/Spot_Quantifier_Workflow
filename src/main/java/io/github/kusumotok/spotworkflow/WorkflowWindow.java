@@ -48,6 +48,7 @@ public final class WorkflowWindow extends JFrame {
     private final JTextField        projectField = new JTextField(18);
     private boolean                 comboSyncing = false;
     private int                     preferredChannel = 1;
+    private boolean                 channelSyncing = false;
 
     // ── Tabs ──────────────────────────────────────────────────────────────────
     private final JTabbedPane tabs             = new JTabbedPane();
@@ -140,6 +141,7 @@ public final class WorkflowWindow extends JFrame {
         zprojCombo.addActionListener(e -> syncSharedParamsToTabs());
         zprojBtn.addActionListener(e -> cmdCreateMaxProj());
         channelSpinner.addChangeListener(e -> {
+            if (channelSyncing) return;
             preferredChannel = (Integer) channelSpinner.getValue();
             syncSharedParamsToTabs();
         });
@@ -324,9 +326,13 @@ public final class WorkflowWindow extends JFrame {
         // 同じ画像に両パネルを bind すると refreshOverlaysFor() で overlay が競合するため
         SpinnerNumberModel model = (SpinnerNumberModel) channelSpinner.getModel();
         int nCh = Math.max(1, imp.getNChannels());
+        int requestedChannel = Math.max(1, preferredChannel);
+        int safeChannel = requestedChannel <= nCh ? requestedChannel : 1;
+        channelSyncing = true;
         model.setMaximum(nCh);
-        int safeChannel = preferredChannel <= nCh ? Math.max(1, preferredChannel) : 1;
         if ((Integer) model.getValue() != safeChannel) model.setValue(safeChannel);
+        channelSyncing = false;
+        preferredChannel = safeChannel;
         seedTab.updateImage(imp);
         segmentationTab.updateImage(imp);
         refreshZProjCombo();
@@ -785,8 +791,10 @@ public final class WorkflowWindow extends JFrame {
         WorkflowPreferences prefs = WorkflowPreferences.load();
         preferredChannel = Math.max(1, prefs.preferredChannel);
         SpinnerNumberModel channelModel = (SpinnerNumberModel) channelSpinner.getModel();
+        channelSyncing = true;
         channelModel.setMaximum(Math.max(1, preferredChannel));
         channelSpinner.setValue(preferredChannel);
+        channelSyncing = false;
         seedTab.setParams(prefs.params);
         segmentationTab.setParams(prefs.params);
         seedTab.setPreviewSettings(prefs.seedPreview);
