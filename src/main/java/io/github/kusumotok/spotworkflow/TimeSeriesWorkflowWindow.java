@@ -1,7 +1,11 @@
 package io.github.kusumotok.spotworkflow;
 
 import ij.ImagePlus;
+import ij.ImageStack;
 import ij.WindowManager;
+import ij.plugin.Duplicator;
+import ij.plugin.ZProjector;
+import ij.process.ImageProcessor;
 import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementRequest;
 import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementResult;
 import io.github.kusumotok.roiexplorer.ui.RoiExplorerPanel;
@@ -46,6 +50,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private boolean comboSyncing;
     private boolean channelSyncing;
     private int preferredChannel = 1;
+    private int previousTabIndex = 0;
 
     public static synchronized TimeSeriesWorkflowWindow getInstance() {
         if (instance == null) instance = new TimeSeriesWorkflowWindow();
@@ -74,10 +79,17 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         add(tabs, BorderLayout.CENTER);
         add(buildFooter(), BorderLayout.SOUTH);
         seedTab.btnMakeSeedRoi.addActionListener(e -> cmdMakeSeedRois());
+        areaTab.btnApply.addActionListener(e -> cmdAreaPreview());
         areaTab.btnMakeResultRoi.addActionListener(e -> cmdMakeResultRois());
         measurementTab.btnMeasure.addActionListener(e -> cmdMeasure());
         btnLoadProject.addActionListener(e -> cmdLoadProject());
         btnShowInFinder.addActionListener(e -> cmdShowInFinder());
+        tabs.addChangeListener(e -> {
+            int current = tabs.getSelectedIndex();
+            applyPreviewPolicy(current);
+            previousTabIndex = current;
+        });
+        applyPreviewPolicy(0);
     }
 
     private JComponent buildTrackTab() {
@@ -113,11 +125,13 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             zprojImage = selected instanceof String && !"None".equals(selected)
                 ? WindowManager.getImage((String) selected)
                 : null;
+            syncSharedParamsToTabs();
         });
         zprojBtn.addActionListener(e -> cmdCreateMaxProj());
         channelSpinner.addChangeListener(e -> {
             if (channelSyncing) return;
             preferredChannel = (Integer) channelSpinner.getValue();
+            syncSharedParamsToTabs();
         });
         projectField.setEditable(false);
 
@@ -137,6 +151,41 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         gc.gridx = 2; gc.weightx = 0; p.add(btnLoadProject, gc);
         gc.gridx = 3; gc.gridwidth = 2; p.add(btnShowInFinder, gc);
         return p;
+    }
+
+    private void applyPreviewPolicy(int current) {
+        seedRoiPanel.setOverlayEnabled(current == 1);
+        seedTab.setPreviewActive(current == 0, current == 0);
+        areaTab.setPreviewActive(current == 3, current == 3);
+        if (current == 1) {
+            seedTab.clearOverlayOnly();
+            areaTab.clearOverlayOnly();
+            syncSeedEditSubImage();
+            if (seedRoiPanel.hasLoadedRoot()) seedRoiPanel.refreshOverlay();
+        } else if (previousTabIndex == 1) {
+            seedRoiPanel.cleanupPreview();
+        }
+        if (current == 3) {
+            seedTab.clearOverlayOnly();
+        }
+    }
+
+    private void syncSharedParamsToTabs() {
+        int ch = (Integer) channelSpinner.getValue();
+        String zproj = (String) zprojCombo.getSelectedItem();
+        seedTab.setExternalChannel(ch);
+        areaTab.setExternalChannel(ch);
+        seedTab.setExternalZProjTitle(zproj);
+        areaTab.setExternalZProjTitle(zproj);
+        syncSeedEditSubImage();
+    }
+
+    private void syncSeedEditSubImage() {
+        if (boundImage == null || zprojImage == null || zprojImage == boundImage) {
+            seedRoiPanel.clearSubBindImage();
+        } else {
+            seedRoiPanel.setSubBindImage(zprojImage);
+        }
     }
 
     private JPanel buildRoiEditTab(RoiExplorerPanel panel) {
@@ -208,6 +257,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             seedRoiPanel.setProjectionMode(true, false, false);
         }
         refreshZProjCombo();
+        syncSharedParamsToTabs();
         if (image == null) {
             setStatus("No image selected.");
         } else if (image.getNFrames() <= 1) {
@@ -310,6 +360,33 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         }.execute();
     }
 
+    private void cmdAreaPreview() {
+        if (boundImage == null || projectFolder == null) {
+            setStatus("Run Seed Track first.");
+            return;
+        }
+        int t = currentTFrame();
+        SegmentationParams params = areaTab.getParams();
+        new SwingWorker<ij.ImagePlus, String>() {
+            @Override protected ij.ImagePlus doInBackground() throws Exception {
+                publish("Preparing tracked seed labels for T " + t + "...");
+                return segmentationCtrl.readSeedTrackLabelsForTime(boundImage, projectFolder, params.channel, t);
+            }
+            @Override protected void process(List<String> chunks) {
+                if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
+            }
+            @Override protected void done() {
+                try {
+                    areaTab.applyPreviewFromSeedLabels(get());
+                    setStatus("Area preview uses seed tracks at T " + t + ".");
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    setStatus("Area preview error: " + cause.getMessage());
+                }
+            }
+        }.execute();
+    }
+
     private void cmdMeasure() {
         Path resultRoot = measurementTab.getSelectedResultRoiFolder();
         if (projectFolder == null || resultRoot == null) {
@@ -320,6 +397,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         resultMeasurePanel.setContainerOrMode(true);
         resultMeasurePanel.openFolder(resultRoot);
         Path csvPath = timeSeriesMeasurementCsv(projectFolder, resultRoot);
+        setStatus("Measuring XYZT track comparison: " + resultRoot.getFileName());
         MeasurementRequest baseRequest = MeasurementRequest
             .useProfile(new io.github.kusumotok.roiexplorer.service.measure.XyztTrackComparisonProfile(measurementTab.getSelectedColumns()))
             .withEnabledColumns(measurementTab.getSelectedColumns())
@@ -389,7 +467,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private void cmdCreateMaxProj() {
         if (boundImage == null) return;
         try {
-            zprojImage = ij.plugin.ZProjector.run(boundImage, "max");
+            zprojImage = createMaxZProjectionPreserveT(boundImage);
             if (zprojImage != null) {
                 zprojImage.setTitle(boundImage.getShortTitle() + "-MAX");
                 zprojImage.show();
@@ -399,6 +477,31 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         } catch (Exception e) {
             setStatus("Could not create Z projection: " + e.getMessage());
         }
+    }
+
+    private static ImagePlus createMaxZProjectionPreserveT(ImagePlus image) {
+        int nC = Math.max(1, image.getNChannels());
+        int nT = Math.max(1, image.getNFrames());
+        ImageStack out = new ImageStack(image.getWidth(), image.getHeight());
+        for (int t = 1; t <= nT; t++) {
+            for (int c = 1; c <= nC; c++) {
+                ImagePlus sub = new Duplicator().run(image, c, c, 1, image.getNSlices(), t, t);
+                ImagePlus projected = ZProjector.run(sub, "max");
+                ImageProcessor ip = projected.getProcessor().duplicate();
+                out.addSlice("c" + c + "-t" + t, ip);
+                sub.flush();
+                projected.flush();
+            }
+        }
+        ImagePlus result = new ImagePlus(image.getShortTitle() + "-MAX", out);
+        result.setCalibration(image.getCalibration());
+        result.setDimensions(nC, 1, nT);
+        if (nC > 1 || nT > 1) result.setOpenAsHyperStack(true);
+        return result;
+    }
+
+    private int currentTFrame() {
+        return boundImage != null && boundImage.isHyperStack() ? Math.max(1, boundImage.getT()) : 1;
     }
 
     private static Path timeSeriesMeasurementCsv(Path project, Path resultRoot) {

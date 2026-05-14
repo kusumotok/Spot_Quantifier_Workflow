@@ -90,6 +90,28 @@ public final class TimeSeriesSegmentationController {
         return resultRoot;
     }
 
+    public ImagePlus readSeedTrackLabelsForTime(ImagePlus image, Path projectFolder, int channel, int time)
+            throws Exception {
+        Path tracksRoot = projectFolder.resolve("seed_tracks");
+        if (!Files.isDirectory(tracksRoot)) {
+            throw new IllegalArgumentException("Missing seed_tracks. Run Seed Track first.");
+        }
+        Path tempSeedRoot = Files.createTempDirectory("spot-quantifier-tseed-preview-");
+        ImagePlus channelTime = null;
+        try {
+            int copied = copyTrackTimeToFlatSeedRoot(tracksRoot, tempSeedRoot, time);
+            if (copied == 0) {
+                throw new IllegalArgumentException("No seed tracks for T " + time + ".");
+            }
+            channelTime = extractChannelTime(image, channel, time);
+            SeedRoiReader.SeedReadResult seedRead = seedRoiReader.read(tempSeedRoot, channelTime);
+            return seedRead.labelImage;
+        } finally {
+            if (channelTime != null) channelTime.flush();
+            deleteTree(tempSeedRoot);
+        }
+    }
+
     public static ImagePlus extractChannelTime(ImagePlus image, int channel, int time) {
         int safeC = Math.max(1, Math.min(channel, Math.max(1, image.getNChannels())));
         int safeT = Math.max(1, Math.min(time, Math.max(1, image.getNFrames())));

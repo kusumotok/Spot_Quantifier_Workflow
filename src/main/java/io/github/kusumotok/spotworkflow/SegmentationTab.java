@@ -936,7 +936,10 @@ public final class SegmentationTab extends JPanel {
 
     private void renderSelectedZProjOverlay() {
         ImagePlus zp = getZProjImp();
-        if (zp != null) renderZProjOverlay(zp);
+        if (zp != null) {
+            syncZProjTime(zp);
+            renderZProjOverlay(zp);
+        }
     }
 
     // ── Preview: cancel / clear ────────────────────────────────────────
@@ -1030,12 +1033,23 @@ public final class SegmentationTab extends JPanel {
     private void updatePreviewForPositionChange(boolean tChanged) {
         if (!originalPreviewActive || modeOff.isSelected() || cachedFinalRoisByZ == null) return;
         if (tChanged && currentImage != null && currentImage.getNFrames() > 1) {
-            clearPreviewOverlay();
-            clearPreviewCache();
-            setPreviewStatus("Press Apply to update T " + currentTFrame());
+            ImagePlus zp = getZProjImp();
+            if (zp != null) syncZProjTime(zp);
+            setPreviewStatus("Computing T " + currentTFrame() + "...");
+            SwingUtilities.invokeLater(this::applyPreview);
             return;
         }
         SwingUtilities.invokeLater(() -> renderPreview(currentZPlane()));
+    }
+
+    private void syncZProjTime(ImagePlus zp) {
+        if (zp == null || currentImage == null || zp.getNFrames() <= 1) return;
+        int t = Math.max(1, Math.min(currentTFrame(), zp.getNFrames()));
+        if (zp.isHyperStack()) {
+            zp.setPosition(Math.max(1, zp.getC()), Math.max(1, zp.getZ()), t);
+        } else {
+            zp.setT(t);
+        }
     }
 
     // ── Z-proj commands ────────────────────────────────────────────────
