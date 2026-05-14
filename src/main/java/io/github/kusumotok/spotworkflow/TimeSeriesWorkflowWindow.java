@@ -38,6 +38,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private final SegmentationTab areaTab = new SegmentationTab(SegmentationTab.Mode.AREA_RESULT);
     private final MeasurementTab measurementTab = new MeasurementTab();
     private final RoiExplorerPanel seedRoiPanel = new RoiExplorerPanel();
+    private final TimeSeriesTrackTab trackTab = new TimeSeriesTrackTab();
     private final RoiExplorerPanel resultMeasurePanel = new RoiExplorerPanel();
     private final MeasurementController measureCtrl = new MeasurementController(resultMeasurePanel);
     private final TimeSeriesSegmentationController segmentationCtrl = new TimeSeriesSegmentationController();
@@ -93,12 +94,13 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     }
 
     private JComponent buildTrackTab() {
-        JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
-        p.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
+        JPanel p = new JPanel(new BorderLayout(0, 4));
         JButton btnAutoTrack = new JButton("Auto Link Seed Tracks");
         btnAutoTrack.addActionListener(e -> cmdAutoTrackSeeds());
-        p.add(btnAutoTrack);
-        p.add(new JLabel("Manual track editor is planned: TrackScheme-like link editing, not ROI tree editing."));
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        actions.add(btnAutoTrack);
+        p.add(actions, BorderLayout.NORTH);
+        p.add(trackTab, BorderLayout.CENTER);
         return p;
     }
 
@@ -166,6 +168,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         } else if (previousTabIndex == 1) {
             seedRoiPanel.cleanupPreview();
         }
+        trackTab.setActive(current == 2);
         if (current == 0) {
             areaTab.setPreviewActive(false, false);
             seedTab.setPreviewActive(true, true);
@@ -262,6 +265,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         preferredChannel = safeChannel;
         seedTab.updateImage(image);
         areaTab.updateImage(image);
+        trackTab.setImage(image);
         if (image != null) {
             seedRoiPanel.setBindImage(image);
             seedRoiPanel.setContainerOrMode(true);
@@ -330,8 +334,9 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             @Override protected void done() {
                 try {
                     Path root = get();
+                    trackTab.setTracksRoot(root);
                     setStatus("Seed tracks saved: " + root);
-                    tabs.setSelectedIndex(3);
+                    tabs.setSelectedIndex(2);
                 } catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
                     setStatus("Track error: " + cause.getMessage());
@@ -456,6 +461,8 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         projectField.setText(projectFolder.toString());
         projectField.setToolTipText(projectFolder.toString());
         openSeedRoiRoot(projectFolder.resolve("seed_rois_untracked"));
+        Path tracksRoot = projectFolder.resolve("seed_tracks");
+        if (Files.isDirectory(tracksRoot)) trackTab.setTracksRoot(tracksRoot);
         refreshMeasurementResultFolders(null);
         setStatus("Loaded project: " + projectFolder);
     }
