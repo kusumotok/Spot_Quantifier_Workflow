@@ -2,6 +2,7 @@ package io.github.kusumotok.spotworkflow;
 
 import ij.ImagePlus;
 import ij.ImageStack;
+import ij.ImageListener;
 import ij.WindowManager;
 import ij.plugin.Duplicator;
 import ij.plugin.ZProjector;
@@ -15,6 +16,8 @@ import io.github.kusumotok.spotworkflow.save.SegmentationParams;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -52,6 +55,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private boolean channelSyncing;
     private int preferredChannel = 1;
     private int previousTabIndex = 0;
+    private ImageListener targetImageListener;
 
     public static synchronized TimeSeriesWorkflowWindow getInstance() {
         if (instance == null) instance = new TimeSeriesWorkflowWindow();
@@ -85,12 +89,22 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         tabs.addTab("Measurement", new JScrollPane(measurementTab));
         add(tabs, BorderLayout.CENTER);
         add(buildFooter(), BorderLayout.SOUTH);
+        installTargetImageListener();
         seedTab.btnMakeSeedRoi.addActionListener(e -> cmdMakeSeedRois());
         areaTab.btnApply.addActionListener(e -> cmdAreaPreview());
         areaTab.btnMakeResultRoi.addActionListener(e -> cmdMakeResultRois());
         measurementTab.btnMeasure.addActionListener(e -> cmdMeasure());
         btnLoadProject.addActionListener(e -> cmdLoadProject());
         btnShowInFinder.addActionListener(e -> cmdShowInFinder());
+        addWindowListener(new WindowAdapter() {
+            @Override public void windowClosed(WindowEvent e) {
+                if (targetImageListener != null) ImagePlus.removeImageListener(targetImageListener);
+                seedTab.onWindowClosing();
+                areaTab.onWindowClosing();
+                seedRoiPanel.onWindowClosing();
+                resultMeasurePanel.onWindowClosing();
+            }
+        });
         tabs.addChangeListener(e -> {
             int current = tabs.getSelectedIndex();
             applyPreviewPolicy(current);
@@ -120,7 +134,12 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         imageCombo.addActionListener(e -> {
             if (comboSyncing) return;
             String title = (String) imageCombo.getSelectedItem();
-            bindImage(WindowManager.getImage(title));
+            if (title == null || title.isEmpty() || "None".equals(title)) {
+                clearTargetImageAndProject("Target image cleared.");
+                return;
+            }
+            ImagePlus image = WindowManager.getImage(title);
+            if (image != null) bindImage(image);
         });
         btnRefresh.setToolTipText("Refresh image list");
         btnRefresh.setMargin(new Insets(2, 4, 2, 4));
@@ -261,6 +280,10 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     }
 
     private void bindImage(ImagePlus image) {
+        if (image == null) return;
+        ImagePlus previous = boundImage;
+        boolean targetChanged = previous != null && previous != image;
+        if (targetChanged) clearProjectForTargetChange();
         boundImage = image;
         int nCh = image != null ? Math.max(1, image.getNChannels()) : 1;
         int safeChannel = Math.max(1, Math.min(preferredChannel, nCh));
@@ -284,8 +307,51 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         } else if (image.getNFrames() <= 1) {
             setStatus("Time Series workflow requires T > 1.");
         } else {
-            setStatus("Bound " + image.getTitle() + " (" + image.getNFrames() + " frames).");
+            setStatus(targetChanged
+                ? "Bound " + image.getTitle() + " (" + image.getNFrames() + " frames). Project cleared for target image change."
+                : "Bound " + image.getTitle() + " (" + image.getNFrames() + " frames).");
         }
+    }
+
+    private void clearProjectForTargetChange() {
+        seedTab.clearPreview();
+        areaTab.clearPreview();
+        seedRoiPanel.closeFolder();
+        resultMeasurePanel.closeFolder();
+        projectFolder = null;
+        projectField.setText("");
+        projectField.setToolTipText(null);
+        trackTab.setTracksRoot(null);
+        refreshMeasurementResultFolders(null);
+    }
+
+    private void clearTargetImageAndProject(String status) {
+        boundImage = null;
+        clearProjectForTargetChange();
+        seedTab.updateImage(null);
+        areaTab.updateImage(null);
+        trackTab.setImage(null);
+        zprojImage = null;
+        refreshZProjCombo();
+        syncSharedParamsToTabs();
+        if (status != null && !status.isEmpty()) setStatus(status);
+    }
+
+    private void installTargetImageListener() {
+        targetImageListener = new ImageListener() {
+            @Override public void imageOpened(ImagePlus imp) {}
+            @Override public void imageUpdated(ImagePlus imp) {}
+            @Override public void imageClosed(ImagePlus imp) {
+                if (imp != boundImage) return;
+                SwingUtilities.invokeLater(() -> {
+                    comboSyncing = true;
+                    imageCombo.setSelectedItem("None");
+                    comboSyncing = false;
+                    clearTargetImageAndProject("Target image closed. Project cleared.");
+                });
+            }
+        };
+        ImagePlus.addImageListener(targetImageListener);
     }
 
     private void cmdMakeSeedRois() {
