@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.IntFunction;
 
 /**
  * Segmentation parameter UI.
@@ -126,6 +127,10 @@ public final class SegmentationTab extends JPanel {
     private Map<Integer, List<Roi>> cachedSeedRoisByZ;
     private List<Roi> cachedZProjResultRois;
     private List<Roi> cachedZProjSeedRois;
+    private Map<Integer, Map<Integer, List<Roi>>> cachedFinalRoisByTZ;
+    private Map<Integer, Map<Integer, List<Roi>>> cachedSeedRoisByTZ;
+    private Map<Integer, List<Roi>> cachedZProjResultRoisByT;
+    private Map<Integer, List<Roi>> cachedZProjSeedRoisByT;
     private String cachedSeedBaseKey;
     private Map<Integer, List<Roi>> cachedSeedRawRoisByLabel;
     private Map<Integer, List<Roi>> cachedSeedAcceptedRoisByLabel;
@@ -757,16 +762,25 @@ public final class SegmentationTab extends JPanel {
     }
 
     private void applyPreview(ImagePlus seedLabelImage) {
+        final int labelT = currentTFrame();
+        applyPreview(seedLabelImage == null ? null : t -> t == labelT ? seedLabelImage : null,
+            seedLabelImage != null ? "editedSeeds:" + System.nanoTime() : null);
+    }
+
+    public void applyPreviewFromSeedLabelProvider(IntFunction<ImagePlus> seedLabelProvider, String seedLabelKey) {
+        applyPreview(seedLabelProvider, seedLabelKey);
+    }
+
+    private void applyPreview(IntFunction<ImagePlus> seedLabelProvider, String seedLabelKey) {
         if (currentImage == null || modeOff.isSelected()) return;
 
         SegmentationParams params = getParams();
-        int previewT = currentTFrame();
-        String key = makeKey(params) + ":t" + previewT
-            + (seedLabelImage != null ? ":editedSeeds:" + System.nanoTime() : "");
+        String key = makeKey(params) + (seedLabelKey != null ? ":" + seedLabelKey : "");
         String seedBaseKey = makeSeedBaseKey(params);
 
         // Cache hit: just re-render current Z
-        if (cachedFinalRoisByZ != null && key.equals(cachedKey)) {
+        if (cachedFinalRoisByTZ != null && key.equals(cachedKey)) {
+            loadPreviewCacheForTime(currentTFrame());
             renderPreview(currentZPlane());
             renderSelectedZProjOverlay();
             return;
@@ -782,44 +796,64 @@ public final class SegmentationTab extends JPanel {
         double vw = cal.pixelWidth  > 0 ? cal.pixelWidth  : 1.0;
         double vh = cal.pixelHeight > 0 ? cal.pixelHeight : 1.0;
         double vd = cal.pixelDepth  > 0 ? cal.pixelDepth  : 1.0;
-        final ImagePlus channelImg  = extractChannelTime(currentImage, params.channel, previewT);
-        final boolean   ownsChannel = channelImg != currentImage;
+        final int frameCount = Math.max(1, currentImage.getNFrames());
 
         new SwingWorker<PreviewResult, String>() {
             @Override
             protected PreviewResult doInBackground() {
-                try {
-                    publish(mode == Mode.SEED ? "Computing 3D seed components..." : "Computing 3D segmentation...");
-                    SeededQuantifier3D.SeededResult seeded = seedLabelImage != null
-                        ? SeededQuantifier3D.computeFromSeedLabels(
-                            channelImg, seedLabelImage, params.areaThreshold,
-                            params.toQuantifierParams(), params.areaEnabled, this::publish, cancelRequested::get)
-                        : SeededQuantifier3D.compute(
-                            channelImg, params.areaThreshold, params.seedThreshold,
-                            params.toQuantifierParams(), vw * vh * vd, params.areaEnabled,
-                            this::publish, cancelRequested::get);
-                    if (seeded == null || seeded.finalSeg == null || seeded.finalSeg.labelImage == null) {
-                        return null;
+                PreviewResult all = new PreviewResult(new HashMap<Integer, List<Roi>>(),
+                    new HashMap<Integer, List<Roi>>(),
+                    mode == Mode.SEED ? new HashMap<Integer, List<Roi>>() : null,
+                    mode == Mode.SEED ? new HashMap<Integer, Long>() : null,
+                    vw * vh * vd);
+                RoiExporter3D exporter = new RoiExporter3D();
+                for (int t = 1; t <= frameCount; t++) {
+                    if (cancelRequested.get()) throw new CancellationException();
+                    ImagePlus channelImg = extractChannelTime(currentImage, params.channel, t);
+                    ImagePlus seedLabelImage = seedLabelProvider != null ? seedLabelProvider.apply(t) : null;
+                    boolean ownsChannel = channelImg != currentImage;
+                    try {
+                        publish((mode == Mode.SEED ? "Computing 3D seed components" : "Computing 3D segmentation")
+                            + " for T " + t + " / " + frameCount + "...");
+                        SeededQuantifier3D.SeededResult seeded = seedLabelImage != null
+                            ? SeededQuantifier3D.computeFromSeedLabels(
+                                channelImg, seedLabelImage, params.areaThreshold,
+                                params.toQuantifierParams(), params.areaEnabled, this::publish, cancelRequested::get)
+                            : SeededQuantifier3D.compute(
+                                channelImg, params.areaThreshold, params.seedThreshold,
+                                params.toQuantifierParams(), vw * vh * vd, params.areaEnabled,
+                                this::publish, cancelRequested::get);
+                        if (seeded == null || seeded.finalSeg == null || seeded.finalSeg.labelImage == null) {
+                            continue;
+                        }
+                        publish("Converting T " + t + " labels to ROI outlines...");
+                        Map<Integer, List<Roi>> finalRois = exporter.exportToRoiListsByLabel(
+                            seeded.finalSeg.labelImage, null, currentImage, params.channel, t);
+                        Map<Integer, List<Roi>> seedRois = null;
+                        if (mode == Mode.SEED && seeded.rawSeedSeg != null && seeded.rawSeedSeg.labelImage != null) {
+                            Map<Integer, List<Roi>> rawRois = exporter.exportToRoiListsByLabel(
+                                seeded.rawSeedSeg.labelImage, null, currentImage, params.channel, t);
+                            finalRois = keyByTime(t, finalRois);
+                            rawRois = keyByTime(t, rawRois);
+                            seedRois = rejectedSeedRois(rawRois, finalRois);
+                            all.finalSliceRois.putAll(finalRois);
+                            all.seedSliceRois.putAll(seedRois);
+                            all.rawSeedRois.putAll(rawRois);
+                            mergeVoxelCounts(all.seedVoxelCounts, t, seeded.seedVoxelCounts);
+                        } else {
+                            if (params.areaEnabled && seeded.seedSeg != null && seeded.seedSeg.labelImage != null) {
+                                seedRois = exporter.exportToRoiListsByLabel(
+                                    seeded.seedSeg.labelImage, null, currentImage, params.channel, t);
+                            }
+                            all.finalSliceRois.putAll(keyByTime(t, finalRois));
+                            if (seedRois != null) all.seedSliceRois.putAll(keyByTime(t, seedRois));
+                        }
+                    } finally {
+                        if (seedLabelImage != null && seedLabelProvider != null) seedLabelImage.flush();
+                        if (ownsChannel) channelImg.flush();
                     }
-                    publish("Converting 3D labels to ROI outlines...");
-                    RoiExporter3D exporter = new RoiExporter3D();
-                    Map<Integer, List<Roi>> finalRois = exporter.exportToRoiListsByLabel(
-                        seeded.finalSeg.labelImage, null, currentImage, params.channel, previewT);
-                    Map<Integer, List<Roi>> seedRois = null;
-                    if (mode == Mode.SEED && seeded.rawSeedSeg != null && seeded.rawSeedSeg.labelImage != null) {
-                        Map<Integer, List<Roi>> rawRois = exporter.exportToRoiListsByLabel(
-                            seeded.rawSeedSeg.labelImage, null, currentImage, params.channel, previewT);
-                        seedRois = rejectedSeedRois(rawRois, finalRois);
-                        return new PreviewResult(finalRois, seedRois, rawRois,
-                            seeded.seedVoxelCounts, vw * vh * vd);
-                    } else if (params.areaEnabled && seeded.seedSeg != null && seeded.seedSeg.labelImage != null) {
-                        seedRois = exporter.exportToRoiListsByLabel(
-                            seeded.seedSeg.labelImage, null, currentImage, params.channel, previewT);
-                    }
-                    return new PreviewResult(finalRois, seedRois);
-                } finally {
-                    if (ownsChannel) channelImg.flush();
                 }
+                return all;
             }
             @Override
             protected void process(List<String> chunks) {
@@ -837,11 +871,12 @@ public final class SegmentationTab extends JPanel {
                         setPreviewStatus("No spots found.");
                         return;
                     }
-                    cachedFinalRoisByZ = organizeByZ(result.finalSliceRois);
-                    cachedSeedRoisByZ = result.seedSliceRois != null ? organizeByZ(result.seedSliceRois) : null;
-                    cachedZProjResultRois = computeZProjRois(result.finalSliceRois);
-                    cachedZProjSeedRois = result.seedSliceRois != null ? computeZProjRois(result.seedSliceRois) : null;
+                    cachedFinalRoisByTZ = organizeByTThenZ(result.finalSliceRois);
+                    cachedSeedRoisByTZ = result.seedSliceRois != null ? organizeByTThenZ(result.seedSliceRois) : null;
+                    cachedZProjResultRoisByT = computeZProjRoisByT(result.finalSliceRois);
+                    cachedZProjSeedRoisByT = result.seedSliceRois != null ? computeZProjRoisByT(result.seedSliceRois) : null;
                     cachedKey = key;
+                    loadPreviewCacheForTime(currentTFrame());
                     if (mode == Mode.SEED) {
                         cachedSeedBaseKey = seedBaseKey;
                         cachedSeedRawRoisByLabel = result.rawSeedRois;
@@ -899,7 +934,11 @@ public final class SegmentationTab extends JPanel {
     }
 
     private void renderZProjOverlay(ImagePlus zp) {
-        if (!zprojPreviewActive || zp == null || cachedZProjResultRois == null) return;
+        if (!zprojPreviewActive || zp == null || cachedZProjResultRoisByT == null) return;
+        int t = zprojCurrentTFrame(zp);
+        cachedZProjResultRois = cachedZProjResultRoisByT.get(t);
+        cachedZProjSeedRois = cachedZProjSeedRoisByT != null ? cachedZProjSeedRoisByT.get(t) : null;
+        if (cachedZProjResultRois == null) return;
         Overlay overlay = new Overlay();
 
         if (modeRoiLight.isSelected()) {
@@ -936,10 +975,7 @@ public final class SegmentationTab extends JPanel {
 
     private void renderSelectedZProjOverlay() {
         ImagePlus zp = getZProjImp();
-        if (zp != null) {
-            syncZProjTime(zp);
-            renderZProjOverlay(zp);
-        }
+        if (zp != null) renderZProjOverlay(zp);
     }
 
     // ── Preview: cancel / clear ────────────────────────────────────────
@@ -1008,10 +1044,20 @@ public final class SegmentationTab extends JPanel {
         if (currentImage == null) { zWatcher = null; return; }
         final int[] lastZ = {-1};
         final int[] lastT = {-1};
+        final int[] lastZProjT = {-1};
         zWatcher = new ImageListener() {
             @Override public void imageOpened(ImagePlus imp) {}
             @Override public void imageClosed(ImagePlus imp) {}
             @Override public void imageUpdated(ImagePlus imp) {
+                ImagePlus zp = getZProjImp();
+                if (zp != null && imp == zp) {
+                    int t = zprojCurrentTFrame(zp);
+                    if (t != lastZProjT[0]) {
+                        lastZProjT[0] = t;
+                        SwingUtilities.invokeLater(() -> renderZProjOverlay(zp));
+                    }
+                    return;
+                }
                 if (imp != currentImage) return;
                 int z = currentZPlane();
                 int t = currentTFrame();
@@ -1031,25 +1077,9 @@ public final class SegmentationTab extends JPanel {
     }
 
     private void updatePreviewForPositionChange(boolean tChanged) {
-        if (!originalPreviewActive || modeOff.isSelected() || cachedFinalRoisByZ == null) return;
-        if (tChanged && currentImage != null && currentImage.getNFrames() > 1) {
-            ImagePlus zp = getZProjImp();
-            if (zp != null) syncZProjTime(zp);
-            setPreviewStatus("Computing T " + currentTFrame() + "...");
-            SwingUtilities.invokeLater(this::applyPreview);
-            return;
-        }
+        if (!originalPreviewActive || modeOff.isSelected() || cachedFinalRoisByTZ == null) return;
+        if (tChanged) loadPreviewCacheForTime(currentTFrame());
         SwingUtilities.invokeLater(() -> renderPreview(currentZPlane()));
-    }
-
-    private void syncZProjTime(ImagePlus zp) {
-        if (zp == null || currentImage == null || zp.getNFrames() <= 1) return;
-        int t = Math.max(1, Math.min(currentTFrame(), zp.getNFrames()));
-        if (zp.isHyperStack()) {
-            zp.setPosition(Math.max(1, zp.getC()), Math.max(1, zp.getZ()), t);
-        } else {
-            zp.setT(t);
-        }
     }
 
     // ── Z-proj commands ────────────────────────────────────────────────
@@ -1476,6 +1506,10 @@ public final class SegmentationTab extends JPanel {
         cachedSeedRoisByZ = null;
         cachedZProjResultRois = null;
         cachedZProjSeedRois = null;
+        cachedFinalRoisByTZ = null;
+        cachedSeedRoisByTZ = null;
+        cachedZProjResultRoisByT = null;
+        cachedZProjSeedRoisByT = null;
         cachedSeedBaseKey = null;
         cachedSeedRawRoisByLabel = null;
         cachedSeedAcceptedRoisByLabel = null;
@@ -1484,21 +1518,59 @@ public final class SegmentationTab extends JPanel {
         cachedSeedVoxelVolume = 1.0;
     }
 
-    private static Map<Integer, List<Roi>> organizeByZ(Map<Integer, List<Roi>> roisByLabel) {
-        Map<Integer, List<Roi>> roisByZ = new HashMap<Integer, List<Roi>>();
+    private void loadPreviewCacheForTime(int t) {
+        if (cachedFinalRoisByTZ == null) return;
+        int safeT = Math.max(1, t);
+        cachedFinalRoisByZ = cachedFinalRoisByTZ.get(safeT);
+        cachedSeedRoisByZ = cachedSeedRoisByTZ != null ? cachedSeedRoisByTZ.get(safeT) : null;
+        cachedZProjResultRois = cachedZProjResultRoisByT != null ? cachedZProjResultRoisByT.get(safeT) : null;
+        cachedZProjSeedRois = cachedZProjSeedRoisByT != null ? cachedZProjSeedRoisByT.get(safeT) : null;
+        if (cachedFinalRoisByZ == null) cachedFinalRoisByZ = Collections.emptyMap();
+    }
+
+    private static Map<Integer, Map<Integer, List<Roi>>> organizeByTThenZ(Map<Integer, List<Roi>> roisByLabel) {
+        Map<Integer, Map<Integer, List<Roi>>> byT = new HashMap<Integer, Map<Integer, List<Roi>>>();
+        if (roisByLabel == null) return byT;
         for (List<Roi> rois : roisByLabel.values()) {
             for (Roi roi : rois) {
+                int t = roi.getTPosition();
+                if (t <= 0) t = 1;
                 int z = roi.getCPosition() > 0 ? roi.getZPosition() : roi.getPosition();
                 if (z <= 0) z = 1;
-                List<Roi> zRois = roisByZ.get(z);
+                Map<Integer, List<Roi>> byZ = byT.get(t);
+                if (byZ == null) {
+                    byZ = new HashMap<Integer, List<Roi>>();
+                    byT.put(t, byZ);
+                }
+                List<Roi> zRois = byZ.get(z);
                 if (zRois == null) {
                     zRois = new ArrayList<Roi>();
-                    roisByZ.put(z, zRois);
+                    byZ.put(z, zRois);
                 }
                 zRois.add(roi);
             }
         }
-        return roisByZ;
+        return byT;
+    }
+
+    private static Map<Integer, List<Roi>> keyByTime(int t, Map<Integer, List<Roi>> roisByLabel) {
+        Map<Integer, List<Roi>> out = new HashMap<Integer, List<Roi>>();
+        if (roisByLabel == null) return out;
+        for (Map.Entry<Integer, List<Roi>> entry : roisByLabel.entrySet()) {
+            out.put(labelKey(t, entry.getKey()), entry.getValue());
+        }
+        return out;
+    }
+
+    private static void mergeVoxelCounts(Map<Integer, Long> dst, int t, Map<Integer, Long> src) {
+        if (dst == null || src == null) return;
+        for (Map.Entry<Integer, Long> entry : src.entrySet()) {
+            dst.put(labelKey(t, entry.getKey()), entry.getValue());
+        }
+    }
+
+    private static int labelKey(int t, int label) {
+        return Math.max(1, t) * 1000000 + label;
     }
 
     private static Map<Integer, List<Roi>> rejectedSeedRois(Map<Integer, List<Roi>> rawRois,
@@ -1562,10 +1634,11 @@ public final class SegmentationTab extends JPanel {
         }
 
         cachedSeedAcceptedRoisByLabel = accepted;
-        cachedFinalRoisByZ = organizeByZ(accepted);
-        cachedSeedRoisByZ = organizeByZ(rejected);
-        cachedZProjResultRois = computeZProjRois(accepted);
-        cachedZProjSeedRois = computeZProjRois(rejected);
+        cachedFinalRoisByTZ = organizeByTThenZ(accepted);
+        cachedSeedRoisByTZ = organizeByTThenZ(rejected);
+        cachedZProjResultRoisByT = computeZProjRoisByT(accepted);
+        cachedZProjSeedRoisByT = computeZProjRoisByT(rejected);
+        loadPreviewCacheForTime(currentTFrame());
         cachedKey = makeKey(params);
         renderPreview(currentZPlane());
         renderSelectedZProjOverlay();
@@ -1674,8 +1747,11 @@ public final class SegmentationTab extends JPanel {
     private Integer findSeedLabelAt(Point point, boolean zproj) {
         List<Integer> hits = new ArrayList<Integer>();
         int z = currentZPlane();
+        int t = zproj ? zprojCurrentTFrame(getZProjImp()) : currentTFrame();
         for (Map.Entry<Integer, List<Roi>> entry : cachedSeedRawRoisByLabel.entrySet()) {
             for (Roi roi : entry.getValue()) {
+                int rt = roi.getTPosition();
+                if (rt > 0 && rt != t) continue;
                 if (!zproj && !roiMatchesZ(roi, z)) continue;
                 if (roiContains(roi, point.x, point.y)) {
                     hits.add(entry.getKey());
@@ -1691,6 +1767,11 @@ public final class SegmentationTab extends JPanel {
     private boolean roiMatchesZ(Roi roi, int z) {
         int rz = roi.getCPosition() > 0 ? roi.getZPosition() : roi.getPosition();
         return rz <= 0 || rz == z;
+    }
+
+    private int zprojCurrentTFrame(ImagePlus zp) {
+        if (zp == null || zp.getNFrames() <= 1) return 1;
+        return zp.isHyperStack() ? Math.max(1, zp.getT()) : Math.max(1, zp.getCurrentSlice());
     }
 
     private boolean roiContains(Roi roi, int x, int y) {
@@ -1797,6 +1878,29 @@ public final class SegmentationTab extends JPanel {
                 projected.setPosition(0);
                 out.add(projected);
             }
+        }
+        return out;
+    }
+
+    private static Map<Integer, List<Roi>> computeZProjRoisByT(Map<Integer, List<Roi>> roisByLabel) {
+        Map<Integer, Map<Integer, List<Roi>>> byTLabel = new HashMap<Integer, Map<Integer, List<Roi>>>();
+        if (roisByLabel == null) return Collections.emptyMap();
+        for (Map.Entry<Integer, List<Roi>> entry : roisByLabel.entrySet()) {
+            int t = 1;
+            List<Roi> rois = entry.getValue();
+            if (rois != null && !rois.isEmpty() && rois.get(0).getTPosition() > 0) {
+                t = rois.get(0).getTPosition();
+            }
+            Map<Integer, List<Roi>> labelMap = byTLabel.get(t);
+            if (labelMap == null) {
+                labelMap = new HashMap<Integer, List<Roi>>();
+                byTLabel.put(t, labelMap);
+            }
+            labelMap.put(entry.getKey(), rois);
+        }
+        Map<Integer, List<Roi>> out = new HashMap<Integer, List<Roi>>();
+        for (Map.Entry<Integer, Map<Integer, List<Roi>>> entry : byTLabel.entrySet()) {
+            out.put(entry.getKey(), computeZProjRois(entry.getValue()));
         }
         return out;
     }

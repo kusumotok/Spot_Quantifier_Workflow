@@ -365,26 +365,20 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             setStatus("Run Seed Track first.");
             return;
         }
-        int t = currentTFrame();
         SegmentationParams params = areaTab.getParams();
-        new SwingWorker<ij.ImagePlus, String>() {
-            @Override protected ij.ImagePlus doInBackground() throws Exception {
-                publish("Preparing tracked seed labels for T " + t + "...");
-                return segmentationCtrl.readSeedTrackLabelsForTime(boundImage, projectFolder, params.channel, t);
-            }
-            @Override protected void process(List<String> chunks) {
-                if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
-            }
-            @Override protected void done() {
+        try {
+            areaTab.applyPreviewFromSeedLabelProvider(t -> {
                 try {
-                    areaTab.applyPreviewFromSeedLabels(get());
-                    setStatus("Area preview uses seed tracks at T " + t + ".");
+                    return segmentationCtrl.readSeedTrackLabelsForTime(boundImage, projectFolder, params.channel, t);
                 } catch (Exception e) {
-                    Throwable cause = e.getCause() != null ? e.getCause() : e;
-                    setStatus("Area preview error: " + cause.getMessage());
+                    throw new RuntimeException(e);
                 }
-            }
-        }.execute();
+            }, "seedTracks:" + projectFolder.toAbsolutePath());
+            setStatus("Area preview uses seed tracks across all T.");
+        } catch (RuntimeException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            setStatus("Area preview error: " + cause.getMessage());
+        }
     }
 
     private void cmdMeasure() {
@@ -498,10 +492,6 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         result.setDimensions(nC, 1, nT);
         if (nC > 1 || nT > 1) result.setOpenAsHyperStack(true);
         return result;
-    }
-
-    private int currentTFrame() {
-        return boundImage != null && boundImage.isHyperStack() ? Math.max(1, boundImage.getT()) : 1;
     }
 
     private static Path timeSeriesMeasurementCsv(Path project, Path resultRoot) {
