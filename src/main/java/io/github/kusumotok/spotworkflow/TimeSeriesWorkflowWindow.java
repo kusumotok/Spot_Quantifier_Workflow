@@ -61,8 +61,14 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private TimeSeriesWorkflowWindow() {
         super("Spot Quantifier Time Series");
         setDefaultCloseOperation(WindowConstants.HIDE_ON_CLOSE);
-        setSize(760, 760);
         buildUI();
+        pack();
+        setMinimumSize(new Dimension(480, 560));
+        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
+        int width = Math.min(Math.max(getWidth(), 760), Math.max(520, screen.width - 80));
+        int height = Math.min(Math.max(getHeight(), 640), Math.max(560, screen.height - 120));
+        setSize(width, height);
+        setLocationRelativeTo(null);
         refreshImageCombo();
         refreshZProjCombo();
         ImagePlus active = WindowManager.getCurrentImage();
@@ -478,17 +484,35 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
 
     private void cmdCreateMaxProj() {
         if (boundImage == null) return;
+        ImagePlus created = null;
         try {
-            zprojImage = createMaxZProjectionPreserveT(boundImage);
-            if (zprojImage != null) {
-                zprojImage.setTitle(boundImage.getShortTitle() + "-MAX");
-                zprojImage.show();
-                refreshZProjCombo();
-                zprojCombo.setSelectedItem(zprojImage.getTitle());
-            }
+            created = createMaxZProjectionPreserveT(boundImage);
         } catch (Exception e) {
             setStatus("Could not create Z projection: " + e.getMessage());
+            return;
         }
+        if (created == null) {
+            setStatus("Could not create Z projection.");
+            return;
+        }
+        zprojImage = created;
+        String title = boundImage.getShortTitle() + "-MAX";
+        zprojImage.setTitle(title);
+        zprojImage.show();
+        String shownTitle = zprojImage.getTitle();
+        refreshZProjCombo();
+        if (!comboContains(zprojCombo, shownTitle)) zprojCombo.addItem(shownTitle);
+        zprojCombo.setSelectedItem(shownTitle);
+        syncSharedParamsToTabs();
+        setStatus("Created Z projection: " + shownTitle);
+    }
+
+    private static boolean comboContains(JComboBox<String> combo, String value) {
+        if (value == null) return false;
+        for (int i = 0; i < combo.getItemCount(); i++) {
+            if (value.equals(combo.getItemAt(i))) return true;
+        }
+        return false;
     }
 
     private static ImagePlus createMaxZProjectionPreserveT(ImagePlus image) {
