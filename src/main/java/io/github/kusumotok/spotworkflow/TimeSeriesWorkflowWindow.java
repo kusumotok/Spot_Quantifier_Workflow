@@ -155,9 +155,9 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
 
     private void applyPreviewPolicy(int current) {
         seedRoiPanel.setOverlayEnabled(current == 1);
-        seedTab.setPreviewActive(current == 0, current == 0);
-        areaTab.setPreviewActive(current == 3, current == 3);
         if (current == 1) {
+            seedTab.setPreviewActive(false, false);
+            areaTab.setPreviewActive(false, false);
             seedTab.clearOverlayOnly();
             areaTab.clearOverlayOnly();
             syncSeedEditSubImage();
@@ -165,8 +165,16 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         } else if (previousTabIndex == 1) {
             seedRoiPanel.cleanupPreview();
         }
-        if (current == 3) {
+        if (current == 0) {
+            areaTab.setPreviewActive(false, false);
+            seedTab.setPreviewActive(true, true);
+        } else if (current == 3) {
+            areaTab.setPreviewActive(false, false);
             seedTab.clearOverlayOnly();
+            areaTab.setPreviewActive(true, true);
+        } else if (current != 1) {
+            seedTab.setPreviewActive(false, false);
+            areaTab.setPreviewActive(false, false);
         }
     }
 

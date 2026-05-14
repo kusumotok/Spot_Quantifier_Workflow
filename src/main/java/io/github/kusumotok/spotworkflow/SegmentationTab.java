@@ -993,8 +993,13 @@ public final class SegmentationTab extends JPanel {
     public void setPreviewActive(boolean originalActive, boolean zprojActive) {
         originalPreviewActive = originalActive;
         zprojPreviewActive = zprojActive;
-        if (originalActive) renderPreview(currentZPlane());
-        if (zprojActive) renderSelectedZProjOverlay();
+        renderCachedPreviewIfActive();
+    }
+
+    public void renderCachedPreviewIfActive() {
+        if (cachedFinalRoisByTZ != null) loadPreviewCacheForTime(currentTFrame());
+        if (originalPreviewActive) renderPreview(currentZPlane());
+        if (zprojPreviewActive) renderSelectedZProjOverlay();
     }
 
     /** Clears overlay on the image and Z-proj, but keeps the cache. */
