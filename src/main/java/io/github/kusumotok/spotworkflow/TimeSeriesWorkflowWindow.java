@@ -38,6 +38,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private final SegmentationTab areaTab = new SegmentationTab(SegmentationTab.Mode.AREA_RESULT);
     private final MeasurementTab measurementTab = new MeasurementTab();
     private final RoiExplorerPanel seedRoiPanel = new RoiExplorerPanel();
+    private final RoiExplorerPanel trackRoiPanel = new RoiExplorerPanel();
     private final RoiExplorerPanel resultMeasurePanel = new RoiExplorerPanel();
     private final MeasurementController measureCtrl = new MeasurementController(resultMeasurePanel);
     private final TimeSeriesSegmentationController segmentationCtrl = new TimeSeriesSegmentationController();
@@ -93,11 +94,18 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     }
 
     private JComponent buildTrackTab() {
-        JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
+        JPanel p = new JPanel(new BorderLayout(0, 4));
+        p.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
+        JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         JButton btnAutoTrack = new JButton("Auto Link Seed Tracks");
         btnAutoTrack.addActionListener(e -> cmdAutoTrackSeeds());
-        p.add(btnAutoTrack);
-        p.add(new JLabel("MVP: nearest-centroid adjacent-T linking; manual correction UI is not implemented yet."));
+        JButton btnLoadTracks = new JButton("Load Seed Tracks");
+        btnLoadTracks.addActionListener(e -> openTrackRoiRoot(projectFolder != null ? projectFolder.resolve("seed_tracks") : null));
+        actions.add(btnAutoTrack);
+        actions.add(btnLoadTracks);
+        actions.add(new JLabel("Edit seed_tracks with ROI Explorer. Move or rename track folders before Area / Result."));
+        p.add(actions, BorderLayout.NORTH);
+        p.add(trackRoiPanel, BorderLayout.CENTER);
         return p;
     }
 
@@ -155,6 +163,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
 
     private void applyPreviewPolicy(int current) {
         seedRoiPanel.setOverlayEnabled(current == 1);
+        trackRoiPanel.setOverlayEnabled(current == 2);
         if (current == 1) {
             seedTab.setPreviewActive(false, false);
             areaTab.setPreviewActive(false, false);
@@ -164,6 +173,16 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             if (seedRoiPanel.hasLoadedRoot()) seedRoiPanel.refreshOverlay();
         } else if (previousTabIndex == 1) {
             seedRoiPanel.cleanupPreview();
+        }
+        if (current == 2) {
+            seedTab.setPreviewActive(false, false);
+            areaTab.setPreviewActive(false, false);
+            seedTab.clearOverlayOnly();
+            areaTab.clearOverlayOnly();
+            syncTrackEditSubImage();
+            if (trackRoiPanel.hasLoadedRoot()) trackRoiPanel.refreshOverlay();
+        } else if (previousTabIndex == 2) {
+            trackRoiPanel.cleanupPreview();
         }
         if (current == 0) {
             areaTab.setPreviewActive(false, false);
@@ -186,13 +205,22 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         seedTab.setExternalZProjTitle(zproj);
         areaTab.setExternalZProjTitle(zproj);
         syncSeedEditSubImage();
+        syncTrackEditSubImage();
     }
 
     private void syncSeedEditSubImage() {
+        syncSubImage(seedRoiPanel);
+    }
+
+    private void syncTrackEditSubImage() {
+        syncSubImage(trackRoiPanel);
+    }
+
+    private void syncSubImage(RoiExplorerPanel panel) {
         if (boundImage == null || zprojImage == null || zprojImage == boundImage) {
-            seedRoiPanel.clearSubBindImage();
+            panel.clearSubBindImage();
         } else {
-            seedRoiPanel.setSubBindImage(zprojImage);
+            panel.setSubBindImage(zprojImage);
         }
     }
 
@@ -263,6 +291,9 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             seedRoiPanel.setBindImage(image);
             seedRoiPanel.setContainerOrMode(true);
             seedRoiPanel.setProjectionMode(true, false, false);
+            trackRoiPanel.setBindImage(image);
+            trackRoiPanel.setContainerOrMode(true);
+            trackRoiPanel.setProjectionMode(true, false, false);
         }
         refreshZProjCombo();
         syncSharedParamsToTabs();
@@ -327,8 +358,9 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             @Override protected void done() {
                 try {
                     Path root = get();
+                    openTrackRoiRoot(root);
                     setStatus("Seed tracks saved: " + root);
-                    tabs.setSelectedIndex(3);
+                    tabs.setSelectedIndex(2);
                 } catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
                     setStatus("Track error: " + cause.getMessage());
@@ -445,6 +477,19 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         seedRoiPanel.openFolder(root);
     }
 
+    private void openTrackRoiRoot(Path root) {
+        if (root == null || !Files.isDirectory(root) || boundImage == null) {
+            setStatus("No seed_tracks folder loaded.");
+            return;
+        }
+        trackRoiPanel.setBindImage(boundImage);
+        trackRoiPanel.setContainerOrMode(true);
+        trackRoiPanel.setProjectionMode(true, false, false);
+        syncTrackEditSubImage();
+        trackRoiPanel.openFolder(root);
+        setStatus("Loaded seed tracks: " + root);
+    }
+
     private void cmdLoadProject() {
         JFileChooser chooser = new JFileChooser();
         chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
@@ -453,6 +498,8 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         projectField.setText(projectFolder.toString());
         projectField.setToolTipText(projectFolder.toString());
         openSeedRoiRoot(projectFolder.resolve("seed_rois_untracked"));
+        Path tracksRoot = projectFolder.resolve("seed_tracks");
+        if (Files.isDirectory(tracksRoot)) openTrackRoiRoot(tracksRoot);
         refreshMeasurementResultFolders(null);
         setStatus("Loaded project: " + projectFolder);
     }
