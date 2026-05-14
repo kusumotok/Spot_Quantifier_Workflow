@@ -21,6 +21,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private final JTabbedPane tabs = new JTabbedPane();
     private final SegmentationTab seedTab = new SegmentationTab(SegmentationTab.Mode.SEED);
     private final TimeSeriesSegmentationController segmentationCtrl = new TimeSeriesSegmentationController();
+    private final TimeSeriesTrackController trackCtrl = new TimeSeriesTrackController();
     private final ResultFolderService folderService = new ResultFolderService();
 
     private ImagePlus boundImage;
@@ -47,12 +48,21 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         add(buildHeader(), BorderLayout.NORTH);
         tabs.addTab("Seed", new JScrollPane(seedTab));
         tabs.addTab("Seed Edit", placeholder("Seed Edit will edit seed_rois_untracked/t### per timepoint."));
-        tabs.addTab("Seed Track", placeholder("Seed Track will link edited seed ROIs across adjacent timepoints."));
+        tabs.addTab("Seed Track", buildTrackTab());
         tabs.addTab("Area / Result", placeholder("Area / Result will use seed_tracks as input."));
         tabs.addTab("Measurement", placeholder("Measurement will use ROI Explorer XYZT track comparison."));
         add(tabs, BorderLayout.CENTER);
         add(buildFooter(), BorderLayout.SOUTH);
         seedTab.btnMakeSeedRoi.addActionListener(e -> cmdMakeSeedRois());
+    }
+
+    private JComponent buildTrackTab() {
+        JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 8));
+        JButton btnAutoTrack = new JButton("Auto Link Seed Tracks");
+        btnAutoTrack.addActionListener(e -> cmdAutoTrackSeeds());
+        p.add(btnAutoTrack);
+        p.add(new JLabel("MVP: nearest-centroid adjacent-T linking; manual correction UI is not implemented yet."));
+        return p;
     }
 
     private JPanel buildHeader() {
@@ -153,6 +163,33 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
                     setStatus("Error: " + cause.getMessage());
                     JOptionPane.showMessageDialog(TimeSeriesWorkflowWindow.this,
                         cause.getMessage(), "Time Series Seed", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }.execute();
+    }
+
+    private void cmdAutoTrackSeeds() {
+        if (projectFolder == null) {
+            setStatus("Run Seed first.");
+            return;
+        }
+        new SwingWorker<Path, String>() {
+            @Override protected Path doInBackground() throws Exception {
+                return trackCtrl.buildTracks(projectFolder, this::publish);
+            }
+            @Override protected void process(List<String> chunks) {
+                if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
+            }
+            @Override protected void done() {
+                try {
+                    Path root = get();
+                    setStatus("Seed tracks saved: " + root);
+                    tabs.setSelectedIndex(3);
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    setStatus("Track error: " + cause.getMessage());
+                    JOptionPane.showMessageDialog(TimeSeriesWorkflowWindow.this,
+                        cause.getMessage(), "Seed Track", JOptionPane.ERROR_MESSAGE);
                 }
             }
         }.execute();
