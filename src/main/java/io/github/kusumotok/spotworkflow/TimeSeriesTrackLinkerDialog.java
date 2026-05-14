@@ -1,8 +1,6 @@
 package io.github.kusumotok.spotworkflow;
 
-import ij.ImageListener;
 import ij.ImagePlus;
-import ij.gui.Line;
 import ij.gui.OvalRoi;
 import ij.gui.Overlay;
 import ij.gui.Roi;
@@ -32,7 +30,11 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private final JList<TrackEditor.ObjRef> rightList = new JList<TrackEditor.ObjRef>(rightModel);
     private final JLabel status = new JLabel(" ");
     private TrackTree tree;
-    private ImageListener imageListener;
+    private boolean renderingOverlay;
+    private final java.util.Map<TrackTree.ObjNode, java.util.List<Roi>> roiOverlayCache =
+        new java.util.IdentityHashMap<TrackTree.ObjNode, java.util.List<Roi>>();
+    private final java.util.Map<TrackTree.ObjNode, OvalRoi> centroidOverlayCache =
+        new java.util.IdentityHashMap<TrackTree.ObjNode, OvalRoi>();
 
     TimeSeriesTrackLinkerDialog(Window owner, ImagePlus image, Path tracksRoot, Runnable onSaved) throws IOException {
         super(owner, "Track Linker", ModalityType.MODELESS);
@@ -40,6 +42,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         this.tracksRoot = tracksRoot;
         this.onSaved = onSaved;
         this.tree = io.read(tracksRoot);
+        rebuildOverlayCache();
         int maxT = image != null ? Math.max(1, image.getNFrames() - 1) : 1;
         timeSpinner = new JSpinner(new SpinnerNumberModel(1, 1, Math.max(1, maxT), 1));
         buildUi();
@@ -96,22 +99,14 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         timeSpinner.addChangeListener(e -> reloadLists());
         leftList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderOverlay(); });
         rightList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderOverlay(); });
-        if (image != null) {
-            imageListener = new ImageListener() {
-                @Override public void imageOpened(ImagePlus imp) {}
-                @Override public void imageClosed(ImagePlus imp) {}
-                @Override public void imageUpdated(ImagePlus imp) {
-                    if (imp == image) SwingUtilities.invokeLater(() -> renderOverlay());
-                }
-            };
-            ImagePlus.addImageListener(imageListener);
-        }
     }
 
     private void reloadLists() {
         int t = currentT();
+        renderingOverlay = true;
         fill(leftModel, editor.objectsAt(tree, t));
         fill(rightModel, editor.objectsAt(tree, t + 1));
+        renderingOverlay = false;
         status.setText("Editing links for T" + t + " -> T" + (t + 1));
         renderOverlay();
     }
@@ -159,6 +154,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         try {
             io.write(tracksRoot, tree);
             tree = io.read(tracksRoot);
+            rebuildOverlayCache();
             reloadLists();
             if (onSaved != null) onSaved.run();
             status.setText("Saved Tracking: " + tracksRoot);
@@ -168,39 +164,61 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     }
 
     private void renderOverlay() {
-        if (image == null) return;
+        if (image == null || renderingOverlay) return;
+        renderingOverlay = true;
         Overlay overlay = new Overlay();
-        TrackEditor.ObjRef left = leftList.getSelectedValue();
-        TrackEditor.ObjRef right = rightList.getSelectedValue();
-        addObject(overlay, left, Color.YELLOW);
-        addObject(overlay, right, Color.CYAN);
-        if (left != null && right != null) {
-            Line line = new Line(left.obj.centerX(), left.obj.centerY(), right.obj.centerX(), right.obj.centerY());
-            line.setStrokeColor(new Color(255, 128, 0, 180));
-            line.setStrokeWidth(2.0);
-            overlay.add(line);
+        try {
+            TrackEditor.ObjRef left = leftList.getSelectedValue();
+            TrackEditor.ObjRef right = rightList.getSelectedValue();
+            addObject(overlay, left, Color.YELLOW);
+            addObject(overlay, right, Color.CYAN);
+            image.setOverlay(overlay.size() > 0 ? overlay : null);
+            image.updateAndDraw();
+        } finally {
+            renderingOverlay = false;
         }
-        image.setOverlay(overlay.size() > 0 ? overlay : null);
-        image.updateAndDraw();
     }
 
-    private static void addObject(Overlay overlay, TrackEditor.ObjRef ref, Color color) {
+    private void rebuildOverlayCache() {
+        roiOverlayCache.clear();
+        centroidOverlayCache.clear();
+        if (tree == null) return;
+        int maxT = image != null ? Math.max(1, image.getNFrames()) : 1;
+        for (int t = 1; t <= maxT; t++) {
+            for (TrackEditor.ObjRef ref : editor.objectsAt(tree, t)) {
+                java.util.List<Roi> rois = new java.util.ArrayList<Roi>();
+                for (Roi roi : ref.obj.getRois()) {
+                    Roi copy = (Roi) roi.clone();
+                    copy.setFillColor(null);
+                    rois.add(copy);
+                }
+                roiOverlayCache.put(ref.obj, rois);
+                OvalRoi dot = new OvalRoi(ref.obj.centerX() - 3.0, ref.obj.centerY() - 3.0, 6.0, 6.0);
+                centroidOverlayCache.put(ref.obj, dot);
+            }
+        }
+    }
+
+    private void addObject(Overlay overlay, TrackEditor.ObjRef ref, Color color) {
         if (ref == null) return;
-        for (Roi roi : ref.obj.getRois()) {
-            Roi copy = (Roi) roi.clone();
+        java.util.List<Roi> rois = roiOverlayCache.get(ref.obj);
+        if (rois == null) rois = java.util.Collections.emptyList();
+        for (Roi cached : rois) {
+            Roi copy = (Roi) cached.clone();
             copy.setStrokeColor(color);
             copy.setFillColor(null);
             overlay.add(copy);
         }
-        OvalRoi dot = new OvalRoi(ref.obj.centerX() - 3.0, ref.obj.centerY() - 3.0, 6.0, 6.0);
+        OvalRoi cachedDot = centroidOverlayCache.get(ref.obj);
+        OvalRoi dot = cachedDot != null
+            ? (OvalRoi) cachedDot.clone()
+            : new OvalRoi(ref.obj.centerX() - 3.0, ref.obj.centerY() - 3.0, 6.0, 6.0);
         dot.setStrokeColor(color);
         dot.setFillColor(new Color(color.getRed(), color.getGreen(), color.getBlue(), 90));
         overlay.add(dot);
     }
 
     @Override public void dispose() {
-        if (imageListener != null) ImagePlus.removeImageListener(imageListener);
-        imageListener = null;
         if (image != null) {
             image.setOverlay(null);
             image.updateAndDraw();

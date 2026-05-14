@@ -52,8 +52,8 @@ final class TimeSeriesTrackTab extends JPanel {
         branchView.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
         JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
             new JScrollPane(branchView), new JScrollPane(table));
-        split.setResizeWeight(0.85);
-        split.setDividerLocation(0.85);
+        split.setResizeWeight(0.93);
+        split.setDividerLocation(0.93);
         add(split, BorderLayout.CENTER);
         add(statusLabel, BorderLayout.SOUTH);
 

@@ -185,16 +185,19 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     }
 
     private void applyPreviewPolicy(int current) {
-        seedRoiPanel.setOverlayEnabled(current == 1);
         if (current == 1) {
+            seedRoiPanel.setOverlayEnabled(false);
             seedTab.setPreviewActive(false, false);
             areaTab.setPreviewActive(false, false);
             seedTab.clearOverlayOnly();
             areaTab.clearOverlayOnly();
             syncSeedEditSubImage();
-            if (seedRoiPanel.hasLoadedRoot()) seedRoiPanel.refreshOverlay();
+            seedRoiPanel.setOverlayEnabled(true);
         } else if (previousTabIndex == 1) {
+            seedRoiPanel.setOverlayEnabled(false);
             seedRoiPanel.cleanupPreview();
+        } else {
+            seedRoiPanel.setOverlayEnabled(false);
         }
         trackTab.setActive(current == 2);
         if (current == 0) {
