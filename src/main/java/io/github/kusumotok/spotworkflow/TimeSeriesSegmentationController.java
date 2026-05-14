@@ -6,6 +6,7 @@ import ij.measure.Calibration;
 import ij.plugin.Duplicator;
 import io.github.kusumotok.spotworkflow.core.alg.SeededQuantifier3D;
 import io.github.kusumotok.spotworkflow.core.roi.RoiExporter3D;
+import io.github.kusumotok.spotworkflow.core.roi.SeedRoiReader;
 import io.github.kusumotok.spotworkflow.save.ParameterFileWriter;
 import io.github.kusumotok.spotworkflow.save.RoiSaveService;
 import io.github.kusumotok.spotworkflow.save.SegmentationParams;
@@ -21,6 +22,7 @@ public final class TimeSeriesSegmentationController {
 
     private final RoiSaveService roiSaveService = new RoiSaveService();
     private final ParameterFileWriter paramWriter = new ParameterFileWriter();
+    private final SeedRoiReader seedRoiReader = new SeedRoiReader();
 
     public Path makeUntrackedSeedRois(ImagePlus image, SegmentationParams params, Path projectFolder,
                                       Consumer<String> progress) throws Exception {
@@ -51,6 +53,43 @@ public final class TimeSeriesSegmentationController {
         return seedRoot;
     }
 
+    public Path makeResultFromSeedTracks(ImagePlus image, SegmentationParams params, Path projectFolder,
+                                         Consumer<String> progress) throws Exception {
+        Path tracksRoot = projectFolder.resolve("seed_tracks");
+        if (!Files.isDirectory(tracksRoot)) {
+            throw new IllegalArgumentException("Missing seed_tracks. Run Seed Track first.");
+        }
+        Path resultRoot = SegmentationController.resultRoiRootFor(projectFolder, params);
+        deleteContents(resultRoot);
+        Files.createDirectories(resultRoot);
+
+        RoiExporter3D exporter = new RoiExporter3D();
+        for (int t = 1; t <= image.getNFrames(); t++) {
+            Path tempSeedRoot = Files.createTempDirectory("spot-quantifier-tseed-");
+            Path tempResultRoot = Files.createTempDirectory("spot-quantifier-tresult-");
+            try {
+                int copied = copyTrackTimeToFlatSeedRoot(tracksRoot, tempSeedRoot, t);
+                if (copied == 0) continue;
+                report(progress, "Making area result for T " + t + " / " + image.getNFrames() + "...");
+                ImagePlus channelTime = extractChannelTime(image, params.channel, t);
+                SeedRoiReader.SeedReadResult seedRead = seedRoiReader.read(tempSeedRoot, channelTime);
+                SeededQuantifier3D.SeededResult result = SeededQuantifier3D.computeFromSeedLabels(
+                    channelTime, seedRead.labelImage, params.areaThreshold, params.toQuantifierParams(),
+                    params.areaEnabled, progress, null);
+                if (result == null || result.finalSeg == null || result.finalSeg.labelImage == null) continue;
+                Map<Integer, List<Roi>> roisByLabel = exporter.exportToRoiListsByLabel(
+                    result.finalSeg.labelImage, null, image, params.channel, t);
+                roiSaveService.saveRoisByNameMapping(tempResultRoot, roisByLabel, seedRead.nameToLabel,
+                    params.saveMode, true);
+                copyFlatResultToTrackTime(tempResultRoot, resultRoot, t);
+            } finally {
+                deleteTree(tempSeedRoot);
+                deleteTree(tempResultRoot);
+            }
+        }
+        return resultRoot;
+    }
+
     public static ImagePlus extractChannelTime(ImagePlus image, int channel, int time) {
         int safeC = Math.max(1, Math.min(channel, Math.max(1, image.getNChannels())));
         int safeT = Math.max(1, Math.min(time, Math.max(1, image.getNFrames())));
@@ -59,6 +98,35 @@ public final class TimeSeriesSegmentationController {
 
     public static String timeFolder(int t) {
         return String.format("t%03d", t);
+    }
+
+    private static int copyTrackTimeToFlatSeedRoot(Path tracksRoot, Path flatRoot, int t) throws Exception {
+        int copied = 0;
+        try (java.util.stream.Stream<Path> stream = Files.list(tracksRoot)) {
+            for (Path track : (Iterable<Path>) stream.filter(Files::isDirectory)::iterator) {
+                Path timeDir = track.resolve(timeFolder(t));
+                if (!Files.isDirectory(timeDir)) continue;
+                copyDirectory(timeDir, flatRoot.resolve(track.getFileName()));
+                copied++;
+            }
+        }
+        return copied;
+    }
+
+    private static void copyFlatResultToTrackTime(Path flatResultRoot, Path resultRoot, int t) throws Exception {
+        try (java.util.stream.Stream<Path> stream = Files.list(flatResultRoot)) {
+            for (Path object : (Iterable<Path>) stream::iterator) {
+                if (!Files.isDirectory(object) && !object.getFileName().toString().toLowerCase().endsWith(".zip")) {
+                    continue;
+                }
+                Path target = resultRoot.resolve(object.getFileName()).resolve(timeFolder(t));
+                if (Files.isDirectory(object)) copyDirectory(object, target);
+                else {
+                    Files.createDirectories(target);
+                    Files.copy(object, target.resolve(object.getFileName()), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
     }
 
     private static double calibrationVoxelVolume(Calibration cal) {
@@ -105,6 +173,34 @@ public final class TimeSeriesSegmentationController {
 
     private static void moveIfExists(Path source, Path target) throws Exception {
         if (Files.exists(source)) Files.move(source, target);
+    }
+
+    private static void copyDirectory(Path source, Path target) throws Exception {
+        Files.createDirectories(target);
+        try (java.util.stream.Stream<Path> stream = Files.walk(source)) {
+            for (Path path : (Iterable<Path>) stream::iterator) {
+                Path rel = source.relativize(path);
+                Path dst = target.resolve(rel);
+                if (Files.isDirectory(path)) Files.createDirectories(dst);
+                else Files.copy(path, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+    }
+
+    private static void deleteContents(Path dir) throws Exception {
+        if (!Files.exists(dir)) return;
+        try (java.util.stream.Stream<Path> stream = Files.walk(dir)) {
+            java.util.List<Path> paths = new java.util.ArrayList<>();
+            stream.forEach(paths::add);
+            paths.sort(java.util.Comparator.reverseOrder());
+            for (Path path : paths) if (!path.equals(dir)) Files.deleteIfExists(path);
+        }
+    }
+
+    private static void deleteTree(Path dir) throws Exception {
+        if (!Files.exists(dir)) return;
+        deleteContents(dir);
+        Files.deleteIfExists(dir);
     }
 
     private static Path nextBackupDir(Path projectFolder) {

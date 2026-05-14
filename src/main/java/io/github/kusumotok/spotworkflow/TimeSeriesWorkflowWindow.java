@@ -20,6 +20,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private final JLabel statusLabel = new JLabel("Ready.");
     private final JTabbedPane tabs = new JTabbedPane();
     private final SegmentationTab seedTab = new SegmentationTab(SegmentationTab.Mode.SEED);
+    private final SegmentationTab areaTab = new SegmentationTab(SegmentationTab.Mode.AREA_RESULT);
     private final TimeSeriesSegmentationController segmentationCtrl = new TimeSeriesSegmentationController();
     private final TimeSeriesTrackController trackCtrl = new TimeSeriesTrackController();
     private final ResultFolderService folderService = new ResultFolderService();
@@ -49,11 +50,12 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         tabs.addTab("Seed", new JScrollPane(seedTab));
         tabs.addTab("Seed Edit", placeholder("Seed Edit will edit seed_rois_untracked/t### per timepoint."));
         tabs.addTab("Seed Track", buildTrackTab());
-        tabs.addTab("Area / Result", placeholder("Area / Result will use seed_tracks as input."));
+        tabs.addTab("Area / Result", new JScrollPane(areaTab));
         tabs.addTab("Measurement", placeholder("Measurement will use ROI Explorer XYZT track comparison."));
         add(tabs, BorderLayout.CENTER);
         add(buildFooter(), BorderLayout.SOUTH);
         seedTab.btnMakeSeedRoi.addActionListener(e -> cmdMakeSeedRois());
+        areaTab.btnMakeResultRoi.addActionListener(e -> cmdMakeResultRois());
     }
 
     private JComponent buildTrackTab() {
@@ -123,6 +125,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private void bindImage(ImagePlus image) {
         boundImage = image;
         seedTab.updateImage(image);
+        areaTab.updateImage(image);
         if (image == null) {
             setStatus("No image selected.");
         } else if (image.getNFrames() <= 1) {
@@ -190,6 +193,34 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
                     setStatus("Track error: " + cause.getMessage());
                     JOptionPane.showMessageDialog(TimeSeriesWorkflowWindow.this,
                         cause.getMessage(), "Seed Track", JOptionPane.ERROR_MESSAGE);
+                }
+            }
+        }.execute();
+    }
+
+    private void cmdMakeResultRois() {
+        if (boundImage == null || projectFolder == null) {
+            setStatus("Run Seed and Seed Track first.");
+            return;
+        }
+        SegmentationParams params = areaTab.getParams();
+        new SwingWorker<Path, String>() {
+            @Override protected Path doInBackground() throws Exception {
+                return segmentationCtrl.makeResultFromSeedTracks(boundImage, params, projectFolder, this::publish);
+            }
+            @Override protected void process(List<String> chunks) {
+                if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
+            }
+            @Override protected void done() {
+                try {
+                    Path root = get();
+                    setStatus("Time-series result ROI saved: " + root);
+                    tabs.setSelectedIndex(4);
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    setStatus("Area result error: " + cause.getMessage());
+                    JOptionPane.showMessageDialog(TimeSeriesWorkflowWindow.this,
+                        cause.getMessage(), "Area / Result", JOptionPane.ERROR_MESSAGE);
                 }
             }
         }.execute();
