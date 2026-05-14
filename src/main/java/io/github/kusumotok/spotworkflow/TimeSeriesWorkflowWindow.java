@@ -2,6 +2,9 @@ package io.github.kusumotok.spotworkflow;
 
 import ij.ImagePlus;
 import ij.WindowManager;
+import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementRequest;
+import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementResult;
+import io.github.kusumotok.roiexplorer.ui.RoiExplorerPanel;
 import io.github.kusumotok.spotworkflow.save.ResultFolderService;
 import io.github.kusumotok.spotworkflow.save.SegmentationParams;
 
@@ -21,6 +24,9 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private final JTabbedPane tabs = new JTabbedPane();
     private final SegmentationTab seedTab = new SegmentationTab(SegmentationTab.Mode.SEED);
     private final SegmentationTab areaTab = new SegmentationTab(SegmentationTab.Mode.AREA_RESULT);
+    private final TimeSeriesMeasurementTab measurementTab = new TimeSeriesMeasurementTab();
+    private final RoiExplorerPanel resultMeasurePanel = new RoiExplorerPanel();
+    private final MeasurementController measureCtrl = new MeasurementController(resultMeasurePanel);
     private final TimeSeriesSegmentationController segmentationCtrl = new TimeSeriesSegmentationController();
     private final TimeSeriesTrackController trackCtrl = new TimeSeriesTrackController();
     private final ResultFolderService folderService = new ResultFolderService();
@@ -51,11 +57,12 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         tabs.addTab("Seed Edit", placeholder("Seed Edit will edit seed_rois_untracked/t### per timepoint."));
         tabs.addTab("Seed Track", buildTrackTab());
         tabs.addTab("Area / Result", new JScrollPane(areaTab));
-        tabs.addTab("Measurement", placeholder("Measurement will use ROI Explorer XYZT track comparison."));
+        tabs.addTab("Measurement", new JScrollPane(measurementTab));
         add(tabs, BorderLayout.CENTER);
         add(buildFooter(), BorderLayout.SOUTH);
         seedTab.btnMakeSeedRoi.addActionListener(e -> cmdMakeSeedRois());
         areaTab.btnMakeResultRoi.addActionListener(e -> cmdMakeResultRois());
+        measurementTab.btnMeasure.addActionListener(e -> cmdMeasure());
     }
 
     private JComponent buildTrackTab() {
@@ -215,6 +222,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
                 try {
                     Path root = get();
                     setStatus("Time-series result ROI saved: " + root);
+                    refreshMeasurementResultFolders(root);
                     tabs.setSelectedIndex(4);
                 } catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
@@ -224,6 +232,64 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
                 }
             }
         }.execute();
+    }
+
+    private void cmdMeasure() {
+        Path resultRoot = measurementTab.getSelectedResultRoiFolder();
+        if (projectFolder == null || resultRoot == null) {
+            setStatus("Select a result ROI first.");
+            return;
+        }
+        resultMeasurePanel.setBindImage(boundImage);
+        resultMeasurePanel.setContainerOrMode(true);
+        resultMeasurePanel.openFolder(resultRoot);
+        Path csvPath = timeSeriesMeasurementCsv(projectFolder, resultRoot);
+        MeasurementRequest request = measurementTab.buildRequest(csvPath);
+        new SwingWorker<MeasurementResult, Void>() {
+            @Override protected MeasurementResult doInBackground() {
+                return measureCtrl.measure(request);
+            }
+            @Override protected void done() {
+                try {
+                    MeasurementResult result = get();
+                    setStatus(result.isPerformed()
+                        ? "Saved " + csvPath.getFileName() + ". " + result.getMessage()
+                        : "Measurement skipped: " + result.getMessage());
+                } catch (Exception e) {
+                    setStatus("Measurement error: " + e.getMessage());
+                }
+            }
+        }.execute();
+    }
+
+    private void refreshMeasurementResultFolders(Path selectedRoot) {
+        java.util.List<Path> roots = new java.util.ArrayList<>();
+        if (projectFolder != null && java.nio.file.Files.isDirectory(projectFolder)) {
+            try (java.nio.file.DirectoryStream<Path> stream =
+                     java.nio.file.Files.newDirectoryStream(projectFolder, "result_rois_area-*")) {
+                for (Path root : stream) if (java.nio.file.Files.isDirectory(root)) roots.add(root);
+            } catch (Exception ignored) {}
+        }
+        roots.sort((a, b) -> Integer.compare(areaSortKey(a), areaSortKey(b)));
+        measurementTab.setResultRoiFolders(roots, selectedRoot);
+    }
+
+    private static Path timeSeriesMeasurementCsv(Path project, Path resultRoot) {
+        String name = resultRoot.getFileName() != null ? resultRoot.getFileName().toString() : "result";
+        String prefix = "result_rois_";
+        String key = name.startsWith(prefix) ? name.substring(prefix.length()) : name;
+        return project.resolve("measurement_" + key + "_xyzt.csv");
+    }
+
+    private static int areaSortKey(Path root) {
+        String name = root.getFileName() != null ? root.getFileName().toString() : "";
+        if ("result_rois_area-disabled".equals(name)) return -1;
+        String prefix = "result_rois_area-th";
+        if (name.startsWith(prefix)) {
+            try { return Integer.parseInt(name.substring(prefix.length())); }
+            catch (NumberFormatException ignored) { return Integer.MAX_VALUE; }
+        }
+        return Integer.MAX_VALUE;
     }
 
     private Path ensureProjectFolder() {
