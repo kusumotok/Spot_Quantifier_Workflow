@@ -14,6 +14,10 @@ public final class TrackTree {
         return Collections.unmodifiableList(tracks);
     }
 
+    public List<TrackNode> mutableTracks() {
+        return tracks;
+    }
+
     public void addTrack(TrackNode track) {
         if (track != null) tracks.add(track);
     }
@@ -41,9 +45,20 @@ public final class TrackTree {
         public Path getSourcePath() { return sourcePath; }
         public void setSourcePath(Path sourcePath) { this.sourcePath = sourcePath; }
         public List<Entry> getChildren() { return Collections.unmodifiableList(children); }
+        public List<Entry> mutableChildren() { return children; }
 
         public void addChild(Entry child) {
             if (child != null) children.add(child);
+        }
+
+        public void addChild(int index, Entry child) {
+            if (child == null) return;
+            int safeIndex = Math.max(0, Math.min(index, children.size()));
+            children.add(safeIndex, child);
+        }
+
+        public boolean removeChild(Entry child) {
+            return children.remove(child);
         }
 
         private void collectObjects(List<ObjNode> out) {

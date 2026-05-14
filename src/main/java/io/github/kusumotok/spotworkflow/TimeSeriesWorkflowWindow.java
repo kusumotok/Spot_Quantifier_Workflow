@@ -116,9 +116,12 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private JComponent buildTrackTab() {
         JPanel p = new JPanel(new BorderLayout(0, 4));
         JButton btnAutoTrack = new JButton("Auto Track + Save");
+        JButton btnLinker = new JButton("Open Linker...");
         btnAutoTrack.addActionListener(e -> cmdAutoTrackSeeds());
+        btnLinker.addActionListener(e -> cmdOpenTrackLinker());
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         actions.add(btnAutoTrack);
+        actions.add(btnLinker);
         p.add(actions, BorderLayout.NORTH);
         p.add(trackTab, BorderLayout.CENTER);
         return p;
@@ -435,6 +438,28 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
                 }
             }
         }.execute();
+    }
+
+    private void cmdOpenTrackLinker() {
+        if (projectFolder == null || boundImage == null) {
+            setStatus("Run Seed Track first.");
+            return;
+        }
+        Path tracksRoot = projectFolder.resolve("seed_tracks");
+        if (!Files.isDirectory(tracksRoot)) {
+            setStatus("Missing seed_tracks. Run Auto Track + Save first.");
+            return;
+        }
+        try {
+            TimeSeriesTrackLinkerDialog dialog = new TimeSeriesTrackLinkerDialog(this, boundImage, tracksRoot, () -> {
+                trackTab.setTracksRoot(tracksRoot);
+                setStatus("Tracking saved: " + tracksRoot);
+            });
+            dialog.setVisible(true);
+        } catch (Exception e) {
+            setStatus("Linker error: " + e.getMessage());
+            JOptionPane.showMessageDialog(this, e.getMessage(), "Track Linker", JOptionPane.ERROR_MESSAGE);
+        }
     }
 
     private void cmdMakeResultRois() {
