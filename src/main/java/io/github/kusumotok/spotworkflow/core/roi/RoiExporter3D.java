@@ -93,6 +93,12 @@ public class RoiExporter3D {
 
     public Map<Integer, List<Roi>> exportToRoiListsByLabel(ImagePlus labelImage, Color roiColor,
                                                             ImagePlus sourceImage, int sourceChannel) {
+        return exportToRoiListsByLabel(labelImage, roiColor, sourceImage, sourceChannel, 1);
+    }
+
+    public Map<Integer, List<Roi>> exportToRoiListsByLabel(ImagePlus labelImage, Color roiColor,
+                                                            ImagePlus sourceImage, int sourceChannel,
+                                                            int sourceTime) {
         if (labelImage == null) {
             IJ.error("Add ROI failed", "Label image is missing.");
             return java.util.Collections.emptyMap();
@@ -105,6 +111,8 @@ public class RoiExporter3D {
         int channel   = Math.max(1, sourceImage != null
             ? Math.min(nChannels, sourceChannel)
             : labelImage.getC());
+        int nFrames = Math.max(1, sourceImage != null ? sourceImage.getNFrames() : labelImage.getNFrames());
+        int frame = Math.max(1, Math.min(sourceTime, nFrames));
 
         Map<Integer, Map<Integer, Rectangle>> bboxByLabelByZ =
             new TreeMap<Integer, Map<Integer, Rectangle>>();
@@ -168,8 +176,8 @@ public class RoiExporter3D {
                 if (roi == null) continue;
                 roi.setLocation(roi.getXBase() + x0, roi.getYBase() + y0);
 
-                if (nChannels > 1) roi.setPosition(channel, z, 1);
-                else               roi.setPosition(z);
+                if (nChannels > 1 || nFrames > 1) roi.setPosition(channel, z, frame);
+                else                              roi.setPosition(z);
                 roi.setStrokeColor(roiColor);
                 roi.setName(String.format("obj-%03d-z%03d", label, z));
                 rois.add(roi);

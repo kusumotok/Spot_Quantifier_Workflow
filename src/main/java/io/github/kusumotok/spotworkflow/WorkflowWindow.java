@@ -314,6 +314,13 @@ public final class WorkflowWindow extends JFrame {
 
     private void bindImage(ImagePlus imp) {
         if (imp == null) return;
+        if (imp.getNFrames() > 1) {
+            setStatus("Time series image detected. Use Plugins > Spot Quantifier Time Series.");
+            JOptionPane.showMessageDialog(this,
+                "This workflow is for T=1 images. Use Spot Quantifier Time Series for T>1 images.",
+                "Spot Quantifier Workflow", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
         ImagePlus previous = controller.getSession().getBoundImage();
         boolean targetChanged = previous != null && previous != imp;
         if (targetChanged) {
