@@ -115,7 +115,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
 
     private JComponent buildTrackTab() {
         JPanel p = new JPanel(new BorderLayout(0, 4));
-        JButton btnAutoTrack = new JButton("Auto Link Seed Tracks");
+        JButton btnAutoTrack = new JButton("Auto Track + Save");
         btnAutoTrack.addActionListener(e -> cmdAutoTrackSeeds());
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         actions.add(btnAutoTrack);
@@ -257,7 +257,9 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         if (ids != null) {
             for (int id : ids) {
                 ImagePlus image = WindowManager.getImage(id);
-                if (image != null && image.getNSlices() > 1) imageCombo.addItem(image.getTitle());
+                if (image != null && (image.getNSlices() > 1 || image.getNFrames() > 1)) {
+                    imageCombo.addItem(image.getTitle());
+                }
             }
         }
         if (selected != null) imageCombo.setSelectedItem(selected);
@@ -285,6 +287,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         boolean targetChanged = previous != null && previous != image;
         if (targetChanged) clearProjectForTargetChange();
         boundImage = image;
+        setImageComboSelection(image.getTitle());
         int nCh = image != null ? Math.max(1, image.getNChannels()) : 1;
         int safeChannel = Math.max(1, Math.min(preferredChannel, nCh));
         channelSyncing = true;
@@ -311,6 +314,21 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
                 ? "Bound " + image.getTitle() + " (" + image.getNFrames() + " frames). Project cleared for target image change."
                 : "Bound " + image.getTitle() + " (" + image.getNFrames() + " frames).");
         }
+    }
+
+    private void setImageComboSelection(String title) {
+        if (title == null || title.isEmpty()) return;
+        comboSyncing = true;
+        boolean found = false;
+        for (int i = 0; i < imageCombo.getItemCount(); i++) {
+            if (title.equals(imageCombo.getItemAt(i))) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) imageCombo.addItem(title);
+        imageCombo.setSelectedItem(title);
+        comboSyncing = false;
     }
 
     private void clearProjectForTargetChange() {

@@ -6,14 +6,16 @@ import ij.gui.Line;
 import ij.gui.OvalRoi;
 import ij.gui.Overlay;
 import ij.gui.Roi;
-import ij.io.RoiDecoder;
+import io.github.kusumotok.spotworkflow.tracking.TrackTree;
+import io.github.kusumotok.spotworkflow.tracking.TrackTreeIo;
+import io.github.kusumotok.spotworkflow.tracking.TrackValidator;
 
 import javax.swing.*;
 import javax.swing.table.AbstractTableModel;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.FlowLayout;
-import java.awt.Rectangle;
+import java.awt.Font;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -28,6 +30,9 @@ final class TimeSeriesTrackTab extends JPanel {
     private final JLabel statusLabel = new JLabel("No seed tracks loaded.");
     private final TrackTableModel tableModel = new TrackTableModel();
     private final JTable table = new JTable(tableModel);
+    private final JTextArea branchView = new JTextArea();
+    private final TrackTreeIo treeIo = new TrackTreeIo();
+    private final TrackValidator validator = new TrackValidator();
 
     private ImagePlus image;
     private Path tracksRoot;
@@ -43,7 +48,13 @@ final class TimeSeriesTrackTab extends JPanel {
         actions.add(btnClearOverlay);
         actions.add(new JLabel("Overlay: current-T seed ROI + centroid trajectories. Link editing UI is next."));
         add(actions, BorderLayout.NORTH);
-        add(new JScrollPane(table), BorderLayout.CENTER);
+        branchView.setEditable(false);
+        branchView.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
+        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
+            new JScrollPane(branchView), new JScrollPane(table));
+        split.setResizeWeight(0.85);
+        split.setDividerLocation(0.85);
+        add(split, BorderLayout.CENTER);
         add(statusLabel, BorderLayout.SOUTH);
 
         table.setFillsViewportHeight(true);
@@ -76,19 +87,26 @@ final class TimeSeriesTrackTab extends JPanel {
         if (tracksRoot == null || !Files.isDirectory(tracksRoot)) {
             tracks = Collections.emptyList();
             tableModel.setTracks(tracks);
+            branchView.setText("");
             statusLabel.setText("No seed_tracks folder loaded.");
             clearOverlay();
             return;
         }
         try {
-            tracks = readTracks(tracksRoot);
+            TrackTree tree = treeIo.read(tracksRoot);
+            tracks = toTracks(tree);
             tableModel.setTracks(tracks);
-            statusLabel.setText(tracks.size() + " tracks loaded: " + tracksRoot);
+            branchView.setText(renderTree(tree));
+            TrackValidator.Result validation = validator.validate(tree);
+            statusLabel.setText(tracks.size() + " tracks loaded"
+                + (validation.isValid() ? "" : " / INVALID: " + validation.getErrors().get(0))
+                + ": " + tracksRoot);
             renderIfActive();
         } catch (IOException e) {
             statusLabel.setText("Could not read seed_tracks: " + e.getMessage());
             tracks = Collections.emptyList();
             tableModel.setTracks(tracks);
+            branchView.setText("");
             clearOverlay();
         }
     }
@@ -156,65 +174,56 @@ final class TimeSeriesTrackTab extends JPanel {
         listener = null;
     }
 
-    private static List<Track> readTracks(Path root) throws IOException {
+    private static List<Track> toTracks(TrackTree tree) {
         List<Track> out = new ArrayList<>();
-        try (java.util.stream.Stream<Path> stream = Files.list(root)) {
-            List<Path> dirs = new ArrayList<>();
-            stream.filter(Files::isDirectory)
-                .sorted(Comparator.comparing(p -> p.getFileName().toString()))
-                .forEach(dirs::add);
-            for (Path dir : dirs) {
-                Track track = readTrack(dir);
-                if (!track.spots.isEmpty()) out.add(track);
-            }
+        if (tree == null) return out;
+        for (TrackTree.TrackNode node : tree.getTracks()) {
+            List<TrackSpot> spots = new ArrayList<TrackSpot>();
+            collectSpots(node, spots);
+            Collections.sort(spots, Comparator.comparingInt(s -> s.t));
+            if (!spots.isEmpty()) out.add(new Track("track " + node.getGlobalId(), spots));
         }
         return out;
     }
 
-    private static Track readTrack(Path trackDir) throws IOException {
-        List<TrackSpot> spots = new ArrayList<>();
-        try (java.util.stream.Stream<Path> stream = Files.list(trackDir)) {
-            List<Path> timeDirs = new ArrayList<>();
-            stream.filter(Files::isDirectory)
-                .filter(p -> parseTimeFolder(p) > 0)
-                .sorted(Comparator.comparingInt(TimeSeriesTrackTab::parseTimeFolder))
-                .forEach(timeDirs::add);
-            for (Path timeDir : timeDirs) {
-                TrackSpot spot = readSpot(timeDir, parseTimeFolder(timeDir));
-                if (spot != null) spots.add(spot);
+    private static void collectSpots(TrackTree.TrackNode track, List<TrackSpot> spots) {
+        for (TrackTree.Entry child : track.getChildren()) {
+            if (child instanceof TrackTree.ObjNode) {
+                TrackTree.ObjNode obj = (TrackTree.ObjNode) child;
+                if (!obj.getRois().isEmpty()) {
+                    spots.add(new TrackSpot(obj.firstT(), obj.centerX(), obj.centerY(),
+                        new ArrayList<Roi>(obj.getRois())));
+                }
+            } else if (child instanceof TrackTree.TrackNode) {
+                collectSpots((TrackTree.TrackNode) child, spots);
             }
         }
-        return new Track(trackDir.getFileName().toString(), spots);
     }
 
-    private static TrackSpot readSpot(Path timeDir, int t) throws IOException {
-        List<Roi> rois = new ArrayList<>();
-        try (java.util.stream.Stream<Path> stream = Files.walk(timeDir)) {
-            List<Path> files = new ArrayList<>();
-            stream.filter(p -> Files.isRegularFile(p) && p.getFileName().toString().toLowerCase().endsWith(".roi"))
-                .forEach(files::add);
-            for (Path file : files) {
-                Roi roi = new RoiDecoder(file.toString()).getRoi();
-                if (roi != null) rois.add(roi);
+    private static String renderTree(TrackTree tree) {
+        StringBuilder sb = new StringBuilder();
+        if (tree == null || tree.getTracks().isEmpty()) return "No tracks.";
+        for (TrackTree.TrackNode track : tree.getTracks()) renderTrack(sb, track, 0);
+        return sb.toString();
+    }
+
+    private static void renderTrack(StringBuilder sb, TrackTree.TrackNode track, int depth) {
+        indent(sb, depth).append("track ").append(track.getGlobalId()).append('\n');
+        for (TrackTree.Entry child : track.getChildren()) {
+            if (child instanceof TrackTree.ObjNode) {
+                TrackTree.ObjNode obj = (TrackTree.ObjNode) child;
+                indent(sb, depth + 1).append(obj.getGlobalId())
+                    .append(" obj ").append(obj.getSourceObjId())
+                    .append(" [T").append(obj.firstT()).append("]\n");
+            } else if (child instanceof TrackTree.TrackNode) {
+                renderTrack(sb, (TrackTree.TrackNode) child, depth + 1);
             }
         }
-        if (rois.isEmpty()) return null;
-        double sx = 0.0;
-        double sy = 0.0;
-        int n = 0;
-        for (Roi roi : rois) {
-            Rectangle b = roi.getBounds();
-            sx += b.getCenterX();
-            sy += b.getCenterY();
-            n++;
-        }
-        return new TrackSpot(t, sx / n, sy / n, rois);
     }
 
-    private static int parseTimeFolder(Path path) {
-        String name = path.getFileName() != null ? path.getFileName().toString() : "";
-        if (!name.matches("(?i)t\\d+")) return 0;
-        return Integer.parseInt(name.substring(1));
+    private static StringBuilder indent(StringBuilder sb, int depth) {
+        for (int i = 0; i < depth; i++) sb.append("  ");
+        return sb;
     }
 
     private static final class Track {

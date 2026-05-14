@@ -1,21 +1,23 @@
 package io.github.kusumotok.spotworkflow;
 
 import ij.gui.Roi;
-import ij.io.RoiDecoder;
+import io.github.kusumotok.spotworkflow.tracking.TrackTree;
+import io.github.kusumotok.spotworkflow.tracking.TrackTreeIo;
+import io.github.kusumotok.spotworkflow.tracking.TrackValidator;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
 public final class TimeSeriesTrackController {
+    private final TrackTreeIo treeIo = new TrackTreeIo();
+    private final TrackValidator validator = new TrackValidator();
 
     public Path buildTracks(Path projectFolder, Consumer<String> progress) throws Exception {
         Path untrackedRoot = projectFolder.resolve("seed_rois_untracked");
@@ -26,33 +28,38 @@ public final class TimeSeriesTrackController {
         if (timeRoots.isEmpty()) throw new IOException("No timepoint folders in seed_rois_untracked.");
 
         Path tracksRoot = projectFolder.resolve("seed_tracks");
-        deleteContents(tracksRoot);
-        Files.createDirectories(tracksRoot);
+        backupExistingTracks(projectFolder, tracksRoot, progress);
 
-        Map<Integer, Integer> previousTrackByObject = new HashMap<>();
         List<ObjectInfo> previousObjects = new ArrayList<>();
+        TrackTree tree = new TrackTree();
         int nextTrackId = 1;
         for (Path timeRoot : timeRoots) {
             int t = parseTimeFolder(timeRoot);
             report(progress, "Linking seed ROIs for T " + t + "...");
             List<ObjectInfo> currentObjects = readObjects(timeRoot, t);
-            Map<Integer, Integer> currentTrackByObject = new HashMap<>();
             Set<Integer> usedPrevious = new HashSet<>();
             for (ObjectInfo current : currentObjects) {
                 ObjectInfo best = nearestUnused(current, previousObjects, usedPrevious);
-                int trackId;
+                TrackTree.TrackNode track;
                 if (best != null) {
-                    trackId = previousTrackByObject.get(best.index);
+                    track = best.track;
                     usedPrevious.add(best.index);
                 } else {
-                    trackId = nextTrackId++;
+                    track = new TrackTree.TrackNode(String.format("%03d", nextTrackId++), "track");
+                    tree.addTrack(track);
                 }
-                currentTrackByObject.put(current.index, trackId);
-                copyObjectToTrack(current.path, tracksRoot, trackId, t);
+                current.track = track;
+                track.addChild(new TrackTree.ObjNode("", TrackTreeIo.sourceObjId(t, current.path)));
+                TrackTree.ObjNode obj = (TrackTree.ObjNode) track.getChildren().get(track.getChildren().size() - 1);
+                for (Roi roi : current.rois) obj.addRoi(roi);
             }
             previousObjects = currentObjects;
-            previousTrackByObject = currentTrackByObject;
         }
+        TrackValidator.Result validation = validator.validate(tree);
+        if (!validation.isValid()) {
+            throw new IOException("Auto tracking produced invalid track tree: " + validation.getErrors().get(0));
+        }
+        treeIo.write(tracksRoot, tree);
         report(progress, "Seed tracks saved: " + tracksRoot);
         return tracksRoot;
     }
@@ -77,29 +84,25 @@ public final class TimeSeriesTrackController {
                 .forEach(objects::add);
             int index = 1;
             for (Path object : objects) {
-                out.add(new ObjectInfo(index++, t, object, centroid(object)));
+                List<Roi> rois = TrackTreeIo.readRois(object);
+                if (rois.isEmpty()) continue;
+                out.add(new ObjectInfo(index++, t, object, rois, centroid(rois)));
             }
         }
         return out;
     }
 
-    private static Point3 centroid(Path objectDir) throws IOException {
+    private static Point3 centroid(List<Roi> rois) {
         double sx = 0, sy = 0, sz = 0;
         int n = 0;
-        try (java.util.stream.Stream<Path> stream = Files.walk(objectDir)) {
-            List<Path> files = new ArrayList<>();
-            stream.filter(p -> Files.isRegularFile(p) && p.getFileName().toString().toLowerCase().endsWith(".roi"))
-                .forEach(files::add);
-            for (Path file : files) {
-                Roi roi = new RoiDecoder(file.toString()).getRoi();
-                if (roi == null) continue;
-                java.awt.Rectangle b = roi.getBounds();
-                sx += b.getCenterX();
-                sy += b.getCenterY();
-                int z = roi.getZPosition() > 0 ? roi.getZPosition() : roi.getPosition();
-                sz += z > 0 ? z : 1;
-                n++;
-            }
+        for (Roi roi : rois) {
+            if (roi == null) continue;
+            java.awt.Rectangle b = roi.getBounds();
+            sx += b.getCenterX();
+            sy += b.getCenterY();
+            int z = roi.getZPosition() > 0 ? roi.getZPosition() : roi.getPosition();
+            sz += z > 0 ? z : 1;
+            n++;
         }
         if (n == 0) return new Point3(0, 0, 0);
         return new Point3(sx / n, sy / n, sz / n);
@@ -119,36 +122,6 @@ public final class TimeSeriesTrackController {
         return best;
     }
 
-    private static void copyObjectToTrack(Path object, Path tracksRoot, int trackId, int t) throws IOException {
-        Path target = tracksRoot.resolve(String.format("obj-%03d", trackId))
-            .resolve(TimeSeriesSegmentationController.timeFolder(t));
-        copyDirectory(object, target);
-    }
-
-    private static void copyDirectory(Path source, Path target) throws IOException {
-        Files.createDirectories(target);
-        try (java.util.stream.Stream<Path> stream = Files.walk(source)) {
-            for (Path path : (Iterable<Path>) stream::iterator) {
-                Path rel = source.relativize(path);
-                Path dst = target.resolve(rel);
-                if (Files.isDirectory(path)) Files.createDirectories(dst);
-                else Files.copy(path, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-            }
-        }
-    }
-
-    private static void deleteContents(Path dir) throws IOException {
-        if (!Files.exists(dir)) return;
-        try (java.util.stream.Stream<Path> stream = Files.walk(dir)) {
-            List<Path> paths = new ArrayList<>();
-            stream.forEach(paths::add);
-            paths.sort(Comparator.reverseOrder());
-            for (Path path : paths) {
-                if (!path.equals(dir)) Files.deleteIfExists(path);
-            }
-        }
-    }
-
     private static int parseTimeFolder(Path path) {
         String name = path.getFileName() != null ? path.getFileName().toString() : "";
         if (!name.matches("(?i)t\\d+")) return 0;
@@ -159,16 +132,30 @@ public final class TimeSeriesTrackController {
         if (progress != null) progress.accept(msg);
     }
 
+    private static void backupExistingTracks(Path projectFolder, Path tracksRoot, Consumer<String> progress) throws IOException {
+        if (!Files.exists(tracksRoot)) return;
+        Path backupRoot = projectFolder.resolve("backup");
+        Files.createDirectories(backupRoot);
+        Path backup = backupRoot.resolve("tracking_1");
+        int suffix = 2;
+        while (Files.exists(backup)) backup = backupRoot.resolve("tracking_" + suffix++);
+        Files.move(tracksRoot, backup);
+        report(progress, "Moved previous seed_tracks to " + projectFolder.relativize(backup));
+    }
+
     private static final class ObjectInfo {
         final int index;
         final int t;
         final Path path;
+        final List<Roi> rois;
         final Point3 centroid;
+        TrackTree.TrackNode track;
 
-        ObjectInfo(int index, int t, Path path, Point3 centroid) {
+        ObjectInfo(int index, int t, Path path, List<Roi> rois, Point3 centroid) {
             this.index = index;
             this.t = t;
             this.path = path;
+            this.rois = rois;
             this.centroid = centroid;
         }
     }

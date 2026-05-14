@@ -12,6 +12,7 @@ import io.github.kusumotok.spotworkflow.core.roi.SeedRoiReader;
 import io.github.kusumotok.spotworkflow.save.ParameterFileWriter;
 import io.github.kusumotok.spotworkflow.save.RoiSaveService;
 import io.github.kusumotok.spotworkflow.save.SegmentationParams;
+import io.github.kusumotok.spotworkflow.tracking.TrackTreeIo;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -25,6 +26,7 @@ public final class TimeSeriesSegmentationController {
     private final RoiSaveService roiSaveService = new RoiSaveService();
     private final ParameterFileWriter paramWriter = new ParameterFileWriter();
     private final SeedRoiReader seedRoiReader = new SeedRoiReader();
+    private final TrackTreeIo trackTreeIo = new TrackTreeIo();
 
     public Path makeUntrackedSeedRois(ImagePlus image, SegmentationParams params, Path projectFolder,
                                       Consumer<String> progress) throws Exception {
@@ -70,7 +72,7 @@ public final class TimeSeriesSegmentationController {
             Path tempSeedRoot = Files.createTempDirectory("spot-quantifier-tseed-");
             Path tempResultRoot = Files.createTempDirectory("spot-quantifier-tresult-");
             try {
-                int copied = copyTrackTimeToFlatSeedRoot(tracksRoot, tempSeedRoot, t);
+                int copied = trackTreeIo.copyObjectsAtTimeToFlatRoot(tracksRoot, tempSeedRoot, t);
                 if (copied == 0) continue;
                 report(progress, "Making area result for T " + t + " / " + image.getNFrames() + "...");
                 ImagePlus channelTime = extractChannelTime(image, params.channel, t);
@@ -89,7 +91,7 @@ public final class TimeSeriesSegmentationController {
                     result.finalSeg.labelImage, null, image, params.channel, t);
                 roiSaveService.saveRoisByNameMapping(tempResultRoot, roisByLabel, seedRead.nameToLabel,
                     params.saveMode, true);
-                copyFlatResultToTrackTime(tempResultRoot, resultRoot, t);
+                trackTreeIo.copyFlatResultsToTrackTree(tracksRoot, tempResultRoot, resultRoot, t);
             } finally {
                 deleteTree(tempSeedRoot);
                 deleteTree(tempResultRoot);
@@ -107,7 +109,7 @@ public final class TimeSeriesSegmentationController {
         Path tempSeedRoot = Files.createTempDirectory("spot-quantifier-tseed-preview-");
         ImagePlus channelTime = null;
         try {
-            int copied = copyTrackTimeToFlatSeedRoot(tracksRoot, tempSeedRoot, time);
+            int copied = trackTreeIo.copyObjectsAtTimeToFlatRoot(tracksRoot, tempSeedRoot, time);
             if (copied == 0) {
                 return emptyLabelImage(image);
             }
@@ -148,35 +150,6 @@ public final class TimeSeriesSegmentationController {
 
     public static String timeFolder(int t) {
         return String.format("t%03d", t);
-    }
-
-    private static int copyTrackTimeToFlatSeedRoot(Path tracksRoot, Path flatRoot, int t) throws Exception {
-        int copied = 0;
-        try (java.util.stream.Stream<Path> stream = Files.list(tracksRoot)) {
-            for (Path track : (Iterable<Path>) stream.filter(Files::isDirectory)::iterator) {
-                Path timeDir = track.resolve(timeFolder(t));
-                if (!Files.isDirectory(timeDir)) continue;
-                copyDirectory(timeDir, flatRoot.resolve(track.getFileName()));
-                copied++;
-            }
-        }
-        return copied;
-    }
-
-    private static void copyFlatResultToTrackTime(Path flatResultRoot, Path resultRoot, int t) throws Exception {
-        try (java.util.stream.Stream<Path> stream = Files.list(flatResultRoot)) {
-            for (Path object : (Iterable<Path>) stream::iterator) {
-                if (!Files.isDirectory(object) && !object.getFileName().toString().toLowerCase().endsWith(".zip")) {
-                    continue;
-                }
-                Path target = resultRoot.resolve(object.getFileName()).resolve(timeFolder(t));
-                if (Files.isDirectory(object)) copyDirectory(object, target);
-                else {
-                    Files.createDirectories(target);
-                    Files.copy(object, target.resolve(object.getFileName()), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-        }
     }
 
     private static double calibrationVoxelVolume(Calibration cal) {
