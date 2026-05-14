@@ -1,9 +1,11 @@
 package io.github.kusumotok.spotworkflow;
 
 import ij.ImagePlus;
+import ij.ImageStack;
 import ij.gui.Roi;
 import ij.measure.Calibration;
 import ij.plugin.Duplicator;
+import ij.process.FloatProcessor;
 import io.github.kusumotok.spotworkflow.core.alg.SeededQuantifier3D;
 import io.github.kusumotok.spotworkflow.core.roi.RoiExporter3D;
 import io.github.kusumotok.spotworkflow.core.roi.SeedRoiReader;
@@ -72,7 +74,13 @@ public final class TimeSeriesSegmentationController {
                 if (copied == 0) continue;
                 report(progress, "Making area result for T " + t + " / " + image.getNFrames() + "...");
                 ImagePlus channelTime = extractChannelTime(image, params.channel, t);
-                SeedRoiReader.SeedReadResult seedRead = seedRoiReader.read(tempSeedRoot, channelTime);
+                SeedRoiReader.SeedReadResult seedRead;
+                try {
+                    seedRead = seedRoiReader.read(tempSeedRoot, channelTime);
+                } catch (java.io.IOException e) {
+                    if (isNoSeedReadError(e)) continue;
+                    throw e;
+                }
                 SeededQuantifier3D.SeededResult result = SeededQuantifier3D.computeFromSeedLabels(
                     channelTime, seedRead.labelImage, params.areaThreshold, params.toQuantifierParams(),
                     params.areaEnabled, progress, null);
@@ -101,10 +109,16 @@ public final class TimeSeriesSegmentationController {
         try {
             int copied = copyTrackTimeToFlatSeedRoot(tracksRoot, tempSeedRoot, time);
             if (copied == 0) {
-                throw new IllegalArgumentException("No seed tracks for T " + time + ".");
+                return emptyLabelImage(image);
             }
             channelTime = extractChannelTime(image, channel, time);
-            SeedRoiReader.SeedReadResult seedRead = seedRoiReader.read(tempSeedRoot, channelTime);
+            SeedRoiReader.SeedReadResult seedRead;
+            try {
+                seedRead = seedRoiReader.read(tempSeedRoot, channelTime);
+            } catch (java.io.IOException e) {
+                if (isNoSeedReadError(e)) return emptyLabelImage(image);
+                throw e;
+            }
             return seedRead.labelImage;
         } finally {
             if (channelTime != null) channelTime.flush();
@@ -116,6 +130,20 @@ public final class TimeSeriesSegmentationController {
         int safeC = Math.max(1, Math.min(channel, Math.max(1, image.getNChannels())));
         int safeT = Math.max(1, Math.min(time, Math.max(1, image.getNFrames())));
         return new Duplicator().run(image, safeC, safeC, 1, image.getNSlices(), safeT, safeT);
+    }
+
+    private static ImagePlus emptyLabelImage(ImagePlus image) {
+        ImageStack stack = new ImageStack(image.getWidth(), image.getHeight());
+        for (int z = 1; z <= image.getNSlices(); z++) {
+            stack.addSlice(new FloatProcessor(image.getWidth(), image.getHeight()));
+        }
+        return new ImagePlus("empty-seed-labels", stack);
+    }
+
+    private static boolean isNoSeedReadError(java.io.IOException e) {
+        String msg = e.getMessage();
+        return msg != null && (msg.startsWith("No seed objects found")
+            || msg.startsWith("No readable seed ROIs found"));
     }
 
     public static String timeFolder(int t) {
