@@ -5,11 +5,13 @@ import ij.WindowManager;
 import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementRequest;
 import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementResult;
 import io.github.kusumotok.roiexplorer.ui.RoiExplorerPanel;
+import io.github.kusumotok.spotworkflow.core.roi.SeedRoiReader;
 import io.github.kusumotok.spotworkflow.save.ResultFolderService;
 import io.github.kusumotok.spotworkflow.save.SegmentationParams;
 
 import javax.swing.*;
 import java.awt.*;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.concurrent.CancellationException;
@@ -19,12 +21,19 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private static TimeSeriesWorkflowWindow instance;
 
     private final JComboBox<String> imageCombo = new JComboBox<>();
+    private final JButton btnRefresh = new JButton("⟳");
+    private final JSpinner channelSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 1, 1));
+    private final JComboBox<String> zprojCombo = new JComboBox<>();
+    private final JButton zprojBtn = new JButton("Max Proj");
     private final JTextField projectField = new JTextField();
+    private final JButton btnLoadProject = new JButton("Load Project...");
+    private final JButton btnShowInFinder = new JButton("Show in Explorer");
     private final JLabel statusLabel = new JLabel("Ready.");
     private final JTabbedPane tabs = new JTabbedPane();
     private final SegmentationTab seedTab = new SegmentationTab(SegmentationTab.Mode.SEED);
     private final SegmentationTab areaTab = new SegmentationTab(SegmentationTab.Mode.AREA_RESULT);
-    private final TimeSeriesMeasurementTab measurementTab = new TimeSeriesMeasurementTab();
+    private final MeasurementTab measurementTab = new MeasurementTab();
+    private final RoiExplorerPanel seedRoiPanel = new RoiExplorerPanel();
     private final RoiExplorerPanel resultMeasurePanel = new RoiExplorerPanel();
     private final MeasurementController measureCtrl = new MeasurementController(resultMeasurePanel);
     private final TimeSeriesSegmentationController segmentationCtrl = new TimeSeriesSegmentationController();
@@ -32,8 +41,11 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private final ResultFolderService folderService = new ResultFolderService();
 
     private ImagePlus boundImage;
+    private ImagePlus zprojImage;
     private Path projectFolder;
     private boolean comboSyncing;
+    private boolean channelSyncing;
+    private int preferredChannel = 1;
 
     public static synchronized TimeSeriesWorkflowWindow getInstance() {
         if (instance == null) instance = new TimeSeriesWorkflowWindow();
@@ -46,6 +58,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         setSize(760, 760);
         buildUI();
         refreshImageCombo();
+        refreshZProjCombo();
         ImagePlus active = WindowManager.getCurrentImage();
         if (active != null) bindImage(active);
     }
@@ -54,7 +67,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         setLayout(new BorderLayout(4, 4));
         add(buildHeader(), BorderLayout.NORTH);
         tabs.addTab("Seed", new JScrollPane(seedTab));
-        tabs.addTab("Seed Edit", placeholder("Seed Edit will edit seed_rois_untracked/t### per timepoint."));
+        tabs.addTab("Seed Edit", buildRoiEditTab(seedRoiPanel));
         tabs.addTab("Seed Track", buildTrackTab());
         tabs.addTab("Area / Result", new JScrollPane(areaTab));
         tabs.addTab("Measurement", new JScrollPane(measurementTab));
@@ -63,6 +76,8 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         seedTab.btnMakeSeedRoi.addActionListener(e -> cmdMakeSeedRois());
         areaTab.btnMakeResultRoi.addActionListener(e -> cmdMakeResultRois());
         measurementTab.btnMeasure.addActionListener(e -> cmdMeasure());
+        btnLoadProject.addActionListener(e -> cmdLoadProject());
+        btnShowInFinder.addActionListener(e -> cmdShowInFinder());
     }
 
     private JComponent buildTrackTab() {
@@ -86,15 +101,48 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             String title = (String) imageCombo.getSelectedItem();
             bindImage(WindowManager.getImage(title));
         });
-        JButton refresh = new JButton("Refresh");
-        refresh.addActionListener(e -> refreshImageCombo());
+        btnRefresh.setToolTipText("Refresh image list");
+        btnRefresh.setMargin(new Insets(2, 4, 2, 4));
+        btnRefresh.addActionListener(e -> {
+            refreshImageCombo();
+            refreshZProjCombo();
+        });
+        zprojCombo.addItem("None");
+        zprojCombo.addActionListener(e -> {
+            Object selected = zprojCombo.getSelectedItem();
+            zprojImage = selected instanceof String && !"None".equals(selected)
+                ? WindowManager.getImage((String) selected)
+                : null;
+        });
+        zprojBtn.addActionListener(e -> cmdCreateMaxProj());
+        channelSpinner.addChangeListener(e -> {
+            if (channelSyncing) return;
+            preferredChannel = (Integer) channelSpinner.getValue();
+        });
         projectField.setEditable(false);
 
         gc.gridx = 0; gc.gridy = 0; gc.weightx = 0; p.add(new JLabel("Image:"), gc);
         gc.gridx = 1; gc.weightx = 1; p.add(imageCombo, gc);
-        gc.gridx = 2; gc.weightx = 0; p.add(refresh, gc);
-        gc.gridx = 0; gc.gridy = 1; p.add(new JLabel("Project:"), gc);
-        gc.gridx = 1; gc.gridwidth = 2; gc.weightx = 1; p.add(projectField, gc);
+        gc.gridx = 2; gc.weightx = 0; p.add(btnRefresh, gc);
+        gc.gridx = 3; p.add(new JLabel("Ch:"), gc);
+        gc.gridx = 4; p.add(channelSpinner, gc);
+
+        gc.gridx = 0; gc.gridy = 1; gc.gridwidth = 1; p.add(new JLabel("Z-proj:"), gc);
+        gc.gridx = 1; gc.weightx = 1; p.add(zprojCombo, gc);
+        gc.gridx = 2; gc.weightx = 0; gc.gridwidth = 3; p.add(zprojBtn, gc);
+        gc.gridwidth = 1;
+
+        gc.gridx = 0; gc.gridy = 2; p.add(new JLabel("Project:"), gc);
+        gc.gridx = 1; gc.weightx = 1; p.add(projectField, gc);
+        gc.gridx = 2; gc.weightx = 0; p.add(btnLoadProject, gc);
+        gc.gridx = 3; gc.gridwidth = 2; p.add(btnShowInFinder, gc);
+        return p;
+    }
+
+    private JPanel buildRoiEditTab(RoiExplorerPanel panel) {
+        JPanel p = new JPanel(new BorderLayout(0, 4));
+        p.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
+        p.add(panel, BorderLayout.CENTER);
         return p;
     }
 
@@ -129,10 +177,37 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         comboSyncing = false;
     }
 
+    private void refreshZProjCombo() {
+        Object selected = zprojCombo.getSelectedItem();
+        zprojCombo.removeAllItems();
+        zprojCombo.addItem("None");
+        int[] ids = WindowManager.getIDList();
+        if (ids != null) {
+            for (int id : ids) {
+                ImagePlus image = WindowManager.getImage(id);
+                if (image != null && image != boundImage) zprojCombo.addItem(image.getTitle());
+            }
+        }
+        if (selected != null) zprojCombo.setSelectedItem(selected);
+    }
+
     private void bindImage(ImagePlus image) {
         boundImage = image;
+        int nCh = image != null ? Math.max(1, image.getNChannels()) : 1;
+        int safeChannel = Math.max(1, Math.min(preferredChannel, nCh));
+        channelSyncing = true;
+        ((SpinnerNumberModel) channelSpinner.getModel()).setMaximum(nCh);
+        channelSpinner.setValue(safeChannel);
+        channelSyncing = false;
+        preferredChannel = safeChannel;
         seedTab.updateImage(image);
         areaTab.updateImage(image);
+        if (image != null) {
+            seedRoiPanel.setBindImage(image);
+            seedRoiPanel.setContainerOrMode(true);
+            seedRoiPanel.setProjectionMode(true, false, false);
+        }
+        refreshZProjCombo();
         if (image == null) {
             setStatus("No image selected.");
         } else if (image.getNFrames() <= 1) {
@@ -164,6 +239,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             @Override protected void done() {
                 try {
                     Path root = get();
+                    openSeedRoiRoot(root);
                     setStatus("Untracked seed ROI saved: " + root);
                     tabs.setSelectedIndex(1);
                 } catch (CancellationException e) {
@@ -244,7 +320,14 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         resultMeasurePanel.setContainerOrMode(true);
         resultMeasurePanel.openFolder(resultRoot);
         Path csvPath = timeSeriesMeasurementCsv(projectFolder, resultRoot);
-        MeasurementRequest request = measurementTab.buildRequest(csvPath);
+        MeasurementRequest baseRequest = MeasurementRequest
+            .useProfile(new io.github.kusumotok.roiexplorer.service.measure.XyztTrackComparisonProfile(measurementTab.getSelectedColumns()))
+            .withEnabledColumns(measurementTab.getSelectedColumns())
+            .withShowResultsTable(measurementTab.isShowTableSelected())
+            .withMeasureAll(true);
+        final MeasurementRequest request = measurementTab.isSaveCsvSelected()
+            ? baseRequest.withCsvOutput(csvPath)
+            : baseRequest;
         new SwingWorker<MeasurementResult, Void>() {
             @Override protected MeasurementResult doInBackground() {
                 return measureCtrl.measure(request);
@@ -274,6 +357,50 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         measurementTab.setResultRoiFolders(roots, selectedRoot);
     }
 
+    private void openSeedRoiRoot(Path root) {
+        if (root == null || !Files.isDirectory(root) || boundImage == null) return;
+        seedRoiPanel.setBindImage(boundImage);
+        seedRoiPanel.setContainerOrMode(true);
+        seedRoiPanel.setProjectionMode(true, false, false);
+        seedRoiPanel.openFolder(root);
+    }
+
+    private void cmdLoadProject() {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        projectFolder = chooser.getSelectedFile().toPath();
+        projectField.setText(projectFolder.toString());
+        projectField.setToolTipText(projectFolder.toString());
+        openSeedRoiRoot(projectFolder.resolve("seed_rois_untracked"));
+        refreshMeasurementResultFolders(null);
+        setStatus("Loaded project: " + projectFolder);
+    }
+
+    private void cmdShowInFinder() {
+        if (projectFolder == null) return;
+        try {
+            Desktop.getDesktop().open(projectFolder.toFile());
+        } catch (Exception e) {
+            setStatus("Could not open folder: " + e.getMessage());
+        }
+    }
+
+    private void cmdCreateMaxProj() {
+        if (boundImage == null) return;
+        try {
+            zprojImage = ij.plugin.ZProjector.run(boundImage, "max");
+            if (zprojImage != null) {
+                zprojImage.setTitle(boundImage.getShortTitle() + "-MAX");
+                zprojImage.show();
+                refreshZProjCombo();
+                zprojCombo.setSelectedItem(zprojImage.getTitle());
+            }
+        } catch (Exception e) {
+            setStatus("Could not create Z projection: " + e.getMessage());
+        }
+    }
+
     private static Path timeSeriesMeasurementCsv(Path project, Path resultRoot) {
         String name = resultRoot.getFileName() != null ? resultRoot.getFileName().toString() : "result";
         String prefix = "result_rois_";
@@ -298,7 +425,10 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             Path dir = boundImage.getOriginalFileInfo() != null && boundImage.getOriginalFileInfo().directory != null
                 ? java.nio.file.Paths.get(boundImage.getOriginalFileInfo().directory)
                 : java.nio.file.Paths.get(System.getProperty("user.home"));
-            String name = boundImage.getTitle().replaceAll("\\.[^.]+$", "") + " time series result";
+            String pattern = seedTab.getParams().resultFolderPattern;
+            if (pattern == null || pattern.trim().isEmpty()) pattern = "{name} result";
+            String imageName = boundImage.getTitle().replaceAll("\\.[^.]+$", "");
+            String name = pattern.replace("{name}", imageName);
             projectFolder = folderService.createResultFolder(dir, name);
             projectField.setText(projectFolder.toString());
             projectField.setToolTipText(projectFolder.toString());

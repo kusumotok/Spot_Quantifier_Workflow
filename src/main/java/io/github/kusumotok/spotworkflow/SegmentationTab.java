@@ -760,7 +760,9 @@ public final class SegmentationTab extends JPanel {
         if (currentImage == null || modeOff.isSelected()) return;
 
         SegmentationParams params = getParams();
-        String key = makeKey(params) + (seedLabelImage != null ? ":editedSeeds:" + System.nanoTime() : "");
+        int previewT = currentTFrame();
+        String key = makeKey(params) + ":t" + previewT
+            + (seedLabelImage != null ? ":editedSeeds:" + System.nanoTime() : "");
         String seedBaseKey = makeSeedBaseKey(params);
 
         // Cache hit: just re-render current Z
@@ -780,7 +782,7 @@ public final class SegmentationTab extends JPanel {
         double vw = cal.pixelWidth  > 0 ? cal.pixelWidth  : 1.0;
         double vh = cal.pixelHeight > 0 ? cal.pixelHeight : 1.0;
         double vd = cal.pixelDepth  > 0 ? cal.pixelDepth  : 1.0;
-        final ImagePlus channelImg  = extractChannel(currentImage, params.channel);
+        final ImagePlus channelImg  = extractChannelTime(currentImage, params.channel, previewT);
         final boolean   ownsChannel = channelImg != currentImage;
 
         new SwingWorker<PreviewResult, String>() {
@@ -802,17 +804,17 @@ public final class SegmentationTab extends JPanel {
                     publish("Converting 3D labels to ROI outlines...");
                     RoiExporter3D exporter = new RoiExporter3D();
                     Map<Integer, List<Roi>> finalRois = exporter.exportToRoiListsByLabel(
-                        seeded.finalSeg.labelImage, null, currentImage, params.channel);
+                        seeded.finalSeg.labelImage, null, currentImage, params.channel, previewT);
                     Map<Integer, List<Roi>> seedRois = null;
                     if (mode == Mode.SEED && seeded.rawSeedSeg != null && seeded.rawSeedSeg.labelImage != null) {
                         Map<Integer, List<Roi>> rawRois = exporter.exportToRoiListsByLabel(
-                            seeded.rawSeedSeg.labelImage, null, currentImage, params.channel);
+                            seeded.rawSeedSeg.labelImage, null, currentImage, params.channel, previewT);
                         seedRois = rejectedSeedRois(rawRois, finalRois);
                         return new PreviewResult(finalRois, seedRois, rawRois,
                             seeded.seedVoxelCounts, vw * vh * vd);
                     } else if (params.areaEnabled && seeded.seedSeg != null && seeded.seedSeg.labelImage != null) {
                         seedRois = exporter.exportToRoiListsByLabel(
-                            seeded.seedSeg.labelImage, null, currentImage, params.channel);
+                            seeded.seedSeg.labelImage, null, currentImage, params.channel, previewT);
                     }
                     return new PreviewResult(finalRois, seedRois);
                 } finally {
@@ -1002,20 +1004,37 @@ public final class SegmentationTab extends JPanel {
         if (zWatcher != null) ImagePlus.removeImageListener(zWatcher);
         if (currentImage == null) { zWatcher = null; return; }
         final int[] lastZ = {-1};
+        final int[] lastT = {-1};
         zWatcher = new ImageListener() {
             @Override public void imageOpened(ImagePlus imp) {}
             @Override public void imageClosed(ImagePlus imp) {}
             @Override public void imageUpdated(ImagePlus imp) {
                 if (imp != currentImage) return;
                 int z = currentZPlane();
-                if (z != lastZ[0]) { lastZ[0] = z; updatePreviewForZChange(); }
+                int t = currentTFrame();
+                if (z != lastZ[0] || t != lastT[0]) {
+                    lastZ[0] = z;
+                    boolean tChanged = t != lastT[0];
+                    lastT[0] = t;
+                    updatePreviewForPositionChange(tChanged);
+                }
             }
         };
         ImagePlus.addImageListener(zWatcher);
     }
 
     private void updatePreviewForZChange() {
+        updatePreviewForPositionChange(false);
+    }
+
+    private void updatePreviewForPositionChange(boolean tChanged) {
         if (!originalPreviewActive || modeOff.isSelected() || cachedFinalRoisByZ == null) return;
+        if (tChanged && currentImage != null && currentImage.getNFrames() > 1) {
+            clearPreviewOverlay();
+            clearPreviewCache();
+            setPreviewStatus("Press Apply to update T " + currentTFrame());
+            return;
+        }
         SwingUtilities.invokeLater(() -> renderPreview(currentZPlane()));
     }
 
@@ -1422,6 +1441,11 @@ public final class SegmentationTab extends JPanel {
         return currentImage.isHyperStack() ? currentImage.getZ() : currentImage.getCurrentSlice();
     }
 
+    private int currentTFrame() {
+        if (currentImage == null) return 1;
+        return currentImage.isHyperStack() ? Math.max(1, currentImage.getT()) : 1;
+    }
+
     private String makeKey(SegmentationParams p) {
         return p.seedThreshold + ":" + p.areaThreshold + ":" + p.areaEnabled + ":"
             + p.connectivity + ":" + p.fillHoles + ":" + p.minVolUm3 + ":" + p.maxVolUm3
@@ -1812,6 +1836,13 @@ public final class SegmentationTab extends JPanel {
         if (image.getNChannels() <= 1) return image;
         int safeC = Math.max(1, Math.min(channel, image.getNChannels()));
         return new Duplicator().run(image, safeC, safeC, 1, image.getNSlices(), 1, image.getNFrames());
+    }
+
+    private static ImagePlus extractChannelTime(ImagePlus image, int channel, int time) {
+        if (image.getNChannels() <= 1 && image.getNFrames() <= 1) return image;
+        int safeC = Math.max(1, Math.min(channel, Math.max(1, image.getNChannels())));
+        int safeT = Math.max(1, Math.min(time, Math.max(1, image.getNFrames())));
+        return new Duplicator().run(image, safeC, safeC, 1, image.getNSlices(), safeT, safeT);
     }
 
     private static String resolveUnit(ImagePlus image) {
