@@ -23,10 +23,6 @@ public final class ParameterFileReader {
 
         if (map.containsKey("SEED_THRESHOLD"))
             p.seedThreshold = parseInt(map.get("SEED_THRESHOLD"), p.seedThreshold);
-        if (map.containsKey("AREA_THRESHOLD"))
-            p.areaThreshold = parseInt(map.get("AREA_THRESHOLD"), p.areaThreshold);
-        if (hasValue(map, "AREA_ENABLED"))
-            p.areaEnabled = Boolean.parseBoolean(map.get("AREA_ENABLED"));
         if (map.containsKey("MIN_VOL_UM3"))
             p.minVolUm3 = parseDoubleOrNull(map.get("MIN_VOL_UM3"));
         if (map.containsKey("MAX_VOL_UM3"))

@@ -132,10 +132,33 @@ public final class SegmentationController {
 
         // nameToLabel マッピングを使って seed と同じフォルダ名で result を保存
         // obj-003_split1 → result_rois/obj-003_split1 のように追跡できる
-        Path resultRoot = projectFolder.resolve("result_rois");
+        Path resultRoot = resultRoiRootFor(projectFolder, params);
         roiSaveService.saveRoisByNameMapping(resultRoot, roisByLabel, seedRead.nameToLabel, params.saveMode, true);
-        paramWriter.update(projectFolder.resolve("parameters.txt"), params.toAreaParameterMap());
         return resultRoot;
+    }
+
+    public static String areaResultKey(SegmentationParams params) {
+        if (params == null || !params.areaEnabled) return "area-disabled";
+        return "area-th" + params.areaThreshold;
+    }
+
+    public static Path resultRoiRootFor(Path projectFolder, SegmentationParams params) {
+        return projectFolder.resolve("result_rois_" + areaResultKey(params));
+    }
+
+    public static Path measurementCsvFor(Path projectFolder, SegmentationParams params) {
+        return projectFolder.resolve("measurement_" + areaResultKey(params) + ".csv");
+    }
+
+    public static Path measurementCsvFor(Path projectFolder, Path resultRoot, SegmentationParams fallbackParams) {
+        if (resultRoot != null && resultRoot.getFileName() != null) {
+            String name = resultRoot.getFileName().toString();
+            String prefix = "result_rois_";
+            if (name.startsWith(prefix)) {
+                return projectFolder.resolve("measurement_" + name.substring(prefix.length()) + ".csv");
+            }
+        }
+        return measurementCsvFor(projectFolder, fallbackParams);
     }
 
     /**
@@ -186,37 +209,71 @@ public final class SegmentationController {
     private void backupSeedUpdateOutputs(Path projectFolder, Consumer<String> progress) throws Exception {
         if (projectFolder == null) return;
         Path seedRoot = projectFolder.resolve("seed_rois");
-        Path resultRoot = projectFolder.resolve("result_rois");
         Path paramsFile = projectFolder.resolve("parameters.txt");
-        Path measurementCsv = projectFolder.resolve("measurement.csv");
-        boolean hasOutputs = Files.exists(seedRoot) || Files.exists(resultRoot)
-            || Files.exists(paramsFile) || Files.exists(measurementCsv);
+        boolean hasOutputs = Files.exists(seedRoot) || Files.exists(paramsFile)
+            || hasAreaOutputs(projectFolder) || hasMeasurementCsvs(projectFolder);
         if (!hasOutputs) return;
 
-        Path oldRoot = projectFolder.resolve("_old");
-        Files.createDirectories(oldRoot);
-        Path backupDir = nextBackupDir(oldRoot, projectFolder);
+        Path backupDir = nextProjectBackupDir(projectFolder);
         Files.createDirectories(backupDir);
         moveIfExists(seedRoot, backupDir.resolve("seed_rois"));
-        moveIfExists(resultRoot, backupDir.resolve("result_rois"));
+        moveAreaOutputs(projectFolder, backupDir);
         moveIfExists(paramsFile, backupDir.resolve("parameters.txt"));
-        moveIfExists(measurementCsv, backupDir.resolve("measurement.csv"));
+        moveMeasurementCsvs(projectFolder, backupDir);
         report(progress, "Moved previous project outputs to " + backupDir.getFileName());
     }
 
-    private Path nextBackupDir(Path oldRoot, Path projectFolder) {
-        String projectName = projectFolder.getFileName() != null ? projectFolder.getFileName().toString() : "project";
-        String base = projectName + "_backup";
-        Path candidate = oldRoot.resolve(base);
+    private Path nextProjectBackupDir(Path projectFolder) {
+        Path backupRoot = projectFolder.resolve("backup");
+        String base = projectName(projectFolder) + "_backup";
+        Path candidate = backupRoot.resolve(base);
         int suffix = 2;
         while (Files.exists(candidate)) {
-            candidate = oldRoot.resolve(base + "_" + suffix);
+            candidate = backupRoot.resolve(base + "_" + suffix);
             suffix++;
         }
         return candidate;
     }
 
+    private static String projectName(Path projectFolder) {
+        return projectFolder.getFileName() != null ? projectFolder.getFileName().toString() : "project";
+    }
+
     private static void moveIfExists(Path source, Path target) throws Exception {
         if (Files.exists(source)) Files.move(source, target);
+    }
+
+    private static void moveMeasurementCsvs(Path projectFolder, Path backupDir) throws Exception {
+        if (projectFolder == null || !Files.isDirectory(projectFolder)) return;
+        try (java.nio.file.DirectoryStream<Path> stream = Files.newDirectoryStream(projectFolder, "measurement*.csv")) {
+            for (Path csv : stream) {
+                moveIfExists(csv, backupDir.resolve(csv.getFileName()));
+            }
+        }
+    }
+
+    private static void moveAreaOutputs(Path projectFolder, Path backupDir) throws Exception {
+        if (projectFolder == null || !Files.isDirectory(projectFolder)) return;
+        moveIfExists(projectFolder.resolve("result_rois"), backupDir.resolve("result_rois"));
+        try (java.nio.file.DirectoryStream<Path> stream = Files.newDirectoryStream(projectFolder, "result_rois_area-*")) {
+            for (Path resultRoot : stream) {
+                moveIfExists(resultRoot, backupDir.resolve(resultRoot.getFileName()));
+            }
+        }
+    }
+
+    private static boolean hasAreaOutputs(Path projectFolder) throws Exception {
+        if (projectFolder == null || !Files.isDirectory(projectFolder)) return false;
+        if (Files.exists(projectFolder.resolve("result_rois"))) return true;
+        try (java.nio.file.DirectoryStream<Path> stream = Files.newDirectoryStream(projectFolder, "result_rois_area-*")) {
+            return stream.iterator().hasNext();
+        }
+    }
+
+    private static boolean hasMeasurementCsvs(Path projectFolder) throws Exception {
+        if (projectFolder == null || !Files.isDirectory(projectFolder)) return false;
+        try (java.nio.file.DirectoryStream<Path> stream = Files.newDirectoryStream(projectFolder, "measurement*.csv")) {
+            return stream.iterator().hasNext();
+        }
     }
 }

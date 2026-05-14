@@ -40,7 +40,10 @@ public final class ParameterFileWriter {
     public void update(Path outputPath, Map<String, String> updates) throws IOException {
         Map<String, String> merged = new LinkedHashMap<>();
         SegmentationParams.putAllKnownKeys(merged);
-        merged.putAll(readExisting(outputPath));
+        Map<String, String> existing = readExisting(outputPath);
+        for (String key : SegmentationParams.PARAMETER_FILE_KEYS) {
+            if (existing.containsKey(key)) merged.put(key, existing.get(key));
+        }
         for (Map.Entry<String, String> entry : updates.entrySet()) {
             merged.put(entry.getKey(), entry.getValue());
         }

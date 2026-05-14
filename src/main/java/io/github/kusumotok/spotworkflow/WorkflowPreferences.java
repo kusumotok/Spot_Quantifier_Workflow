@@ -120,14 +120,14 @@ final class WorkflowPreferences {
     }
 
     static final class PreviewSettings {
-        boolean hideNoise = false;
+        boolean showTinyFilteredOutRois = true;
         double noiseVolume = 0.0;
         boolean showRejected = true;
         Color seedColor = Color.CYAN;
         Color resultColor = Color.YELLOW;
 
         void load(String prefix) {
-            hideNoise = Prefs.get(key(prefix + "hideNoise"), hideNoise);
+            showTinyFilteredOutRois = Prefs.get(key(prefix + "showTinyFilteredOutRois"), showTinyFilteredOutRois);
             noiseVolume = Prefs.get(key(prefix + "noiseVolume"), noiseVolume);
             showRejected = Prefs.get(key(prefix + "showRejected"), showRejected);
             seedColor = new Color(getInt(prefix + "seedColor", seedColor.getRGB()), true);
@@ -135,7 +135,7 @@ final class WorkflowPreferences {
         }
 
         void save(String prefix) {
-            Prefs.set(key(prefix + "hideNoise"), hideNoise);
+            Prefs.set(key(prefix + "showTinyFilteredOutRois"), showTinyFilteredOutRois);
             Prefs.set(key(prefix + "noiseVolume"), noiseVolume);
             Prefs.set(key(prefix + "showRejected"), showRejected);
             setInt(prefix + "seedColor", seedColor.getRGB());
@@ -144,7 +144,7 @@ final class WorkflowPreferences {
 
         void copyFrom(PreviewSettings other) {
             if (other == null) return;
-            hideNoise = other.hideNoise;
+            showTinyFilteredOutRois = other.showTinyFilteredOutRois;
             noiseVolume = other.noiseVolume;
             showRejected = other.showRejected;
             seedColor = other.seedColor;

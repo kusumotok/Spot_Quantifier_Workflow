@@ -26,8 +26,6 @@ public final class SegmentationParams {
 
     public static final List<String> PARAMETER_FILE_KEYS = java.util.Arrays.asList(
         "SEED_THRESHOLD",
-        "AREA_THRESHOLD",
-        "AREA_ENABLED",
         "MIN_VOL_UM3",
         "MAX_VOL_UM3",
         "CONNECTIVITY",
@@ -46,20 +44,12 @@ public final class SegmentationParams {
         Map<String, String> map = new LinkedHashMap<>();
         putAllKnownKeys(map);
         putSeedParameterValues(map);
-        putAreaParameterValues(map);
         return map;
     }
 
     public Map<String, String> toSeedParameterMap() {
         Map<String, String> map = new LinkedHashMap<>();
         putSeedParameterValues(map);
-        return map;
-    }
-
-    public Map<String, String> toAreaParameterMap() {
-        Map<String, String> map = new LinkedHashMap<>();
-        map.put("AREA_THRESHOLD", String.valueOf(areaThreshold));
-        map.put("AREA_ENABLED", String.valueOf(areaEnabled));
         return map;
     }
 
@@ -75,10 +65,5 @@ public final class SegmentationParams {
         map.put("FILL_HOLES",      String.valueOf(fillHoles));
         map.put("AREA_CONFLICT_MODE", areaConflictMode.name().toLowerCase());
         map.put("SAVE_MODE",       saveMode.name().toLowerCase());
-    }
-
-    private void putAreaParameterValues(Map<String, String> map) {
-        map.put("AREA_THRESHOLD",  String.valueOf(areaThreshold));
-        map.put("AREA_ENABLED",    String.valueOf(areaEnabled));
     }
 }

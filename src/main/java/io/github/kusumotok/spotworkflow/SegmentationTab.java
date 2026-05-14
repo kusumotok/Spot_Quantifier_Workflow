@@ -94,7 +94,7 @@ public final class SegmentationTab extends JPanel {
     final JButton btnClearPreview = new JButton("Clear");
     final JButton btnCancel       = new JButton("Cancel");
     final JLabel  previewCountLabel = new JLabel("");
-    private final JCheckBox  previewNoiseCheck  = new JCheckBox("Hide preview noise <", false);
+    private final JCheckBox  previewNoiseCheck  = new JCheckBox("Show tiny filtered-out ROIs <", true);
     private final JTextField previewNoiseField  = numField("0.0");
     private final JSlider    previewNoiseSlider = new JSlider(0, 1000, 0);
     private final JCheckBox  showRejectedSeedCheck = new JCheckBox("Show filtered-out / excluded ROIs", true);
@@ -575,8 +575,6 @@ public final class SegmentationTab extends JPanel {
             onSizeFilterChanged();
         });
         previewNoiseCheck.addActionListener(e -> {
-            previewNoiseField.setEnabled(previewNoiseCheck.isSelected());
-            previewNoiseSlider.setEnabled(previewNoiseCheck.isSelected());
             onPreviewDisplayChanged();
         });
         previewNoiseField.addActionListener(e -> commitPreviewNoiseField());
@@ -667,8 +665,8 @@ public final class SegmentationTab extends JPanel {
         conflictSplitBtn.setSelected(false);
         if (mode == Mode.SEED) {
             areaSection.setVisible(false);
-            previewNoiseField.setEnabled(previewNoiseCheck.isSelected());
-            previewNoiseSlider.setEnabled(previewNoiseCheck.isSelected());
+            previewNoiseField.setEnabled(true);
+            previewNoiseSlider.setEnabled(true);
             manualSection.setVisible(true);
             updateManualButtonState();
             btnResultColor.setToolTipText("Seed ROI output color");
@@ -1219,7 +1217,7 @@ public final class SegmentationTab extends JPanel {
 
     public WorkflowPreferences.PreviewSettings getPreviewSettings() {
         WorkflowPreferences.PreviewSettings settings = new WorkflowPreferences.PreviewSettings();
-        settings.hideNoise = previewNoiseCheck.isSelected();
+        settings.showTinyFilteredOutRois = previewNoiseCheck.isSelected();
         settings.noiseVolume = parseDoubleOrDefault(previewNoiseField.getText(), 0.0);
         settings.showRejected = showRejectedSeedCheck.isSelected();
         settings.seedColor = seedColor;
@@ -1230,10 +1228,10 @@ public final class SegmentationTab extends JPanel {
     public void setPreviewSettings(WorkflowPreferences.PreviewSettings settings) {
         if (settings == null) return;
         syncing = true;
-        previewNoiseCheck.setSelected(settings.hideNoise);
+        previewNoiseCheck.setSelected(settings.showTinyFilteredOutRois);
         previewNoiseField.setText(formatVolume(settings.noiseVolume));
-        previewNoiseField.setEnabled(settings.hideNoise);
-        previewNoiseSlider.setEnabled(settings.hideNoise);
+        previewNoiseField.setEnabled(true);
+        previewNoiseSlider.setEnabled(true);
         previewNoiseSlider.setValue(volumeToSlider(settings.noiseVolume));
         showRejectedSeedCheck.setSelected(settings.showRejected);
         seedColor = settings.seedColor != null ? settings.seedColor : Color.CYAN;
@@ -1483,7 +1481,7 @@ public final class SegmentationTab extends JPanel {
         Map<Integer, List<Roi>> rejected = new HashMap<Integer, List<Roi>>();
         if (rawRois == null || rawRois.isEmpty()) return rejected;
         Set<Integer> acceptedLabels = acceptedRois != null ? acceptedRois.keySet() : Collections.emptySet();
-        Double previewMin = previewNoiseCheck.isSelected() && showRejectedSeedCheck.isSelected()
+        Double previewMin = !previewNoiseCheck.isSelected() && showRejectedSeedCheck.isSelected()
             ? effectiveMinFilter(parseDoubleOrDefault(previewNoiseField.getText(), sizeSliderMinVolume))
             : null;
         for (Map.Entry<Integer, List<Roi>> entry : rawRois.entrySet()) {
@@ -1504,7 +1502,7 @@ public final class SegmentationTab extends JPanel {
         Map<Integer, List<Roi>> accepted = new HashMap<Integer, List<Roi>>();
         Map<Integer, List<Roi>> rejected = new HashMap<Integer, List<Roi>>();
         int hiddenPreviewNoise = 0;
-        Double previewMin = previewNoiseCheck.isSelected()
+        Double previewMin = !previewNoiseCheck.isSelected()
             ? effectiveMinFilter(parseDoubleOrDefault(previewNoiseField.getText(), sizeSliderMinVolume))
             : null;
         Double minFilter = effectiveMinFilter(params.minVolUm3);
@@ -1741,8 +1739,8 @@ public final class SegmentationTab extends JPanel {
         maxVolSlider.setEnabled(!locked && currentImage != null && maxVolCheck.isSelected());
         showRejectedSeedCheck.setEnabled(true);
         previewNoiseCheck.setEnabled(true);
-        previewNoiseField.setEnabled(previewNoiseCheck.isSelected());
-        previewNoiseSlider.setEnabled(previewNoiseCheck.isSelected());
+        previewNoiseField.setEnabled(true);
+        previewNoiseSlider.setEnabled(true);
         sizeFilterGuardPanel.setVisible(locked);
         seedThresholdSection.setToolTipText(locked ? "Clear manual edits before changing threshold." : null);
         minVolRow.setToolTipText(locked ? "Clear manual edits before changing size filter." : null);

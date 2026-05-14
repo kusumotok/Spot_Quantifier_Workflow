@@ -7,6 +7,7 @@ import io.github.kusumotok.roiexplorer.service.measure.XyzObjectProfile;
 import javax.swing.*;
 import java.awt.*;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -17,6 +18,7 @@ public final class MeasurementTab extends JPanel {
     final JButton btnMeasure = new JButton("Measure");
 
     // ── Output ────────────────────────────────────────────────────────
+    private final JComboBox<ResultFolderItem> resultFolderCombo = new JComboBox<>();
     private final JCheckBox saveCsvCheck    = new JCheckBox("Save CSV to result folder", true);
     private final JCheckBox showTableCheck  = new JCheckBox("Show ResultsTable",          false);
 
@@ -28,6 +30,8 @@ public final class MeasurementTab extends JPanel {
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
         setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
+        add(buildResultFolderPanel());
+        add(Box.createVerticalStrut(8));
         add(buildOutputPanel());
         add(Box.createVerticalStrut(8));
         add(buildColumnsPanel());
@@ -35,6 +39,18 @@ public final class MeasurementTab extends JPanel {
     }
 
     // ── Panel builders ────────────────────────────────────────────────
+
+    private JPanel buildResultFolderPanel() {
+        JPanel p = new JPanel(new BorderLayout(6, 0));
+        p.setBorder(BorderFactory.createTitledBorder(
+            BorderFactory.createEtchedBorder(), "Result ROI"));
+        p.setAlignmentX(LEFT_ALIGNMENT);
+        p.add(new JLabel("Area threshold:"), BorderLayout.WEST);
+        resultFolderCombo.setPrototypeDisplayValue(new ResultFolderItem(Paths.get("result_rois_area-th0000")));
+        p.add(resultFolderCombo, BorderLayout.CENTER);
+        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
+        return p;
+    }
 
     private JPanel buildOutputPanel() {
         JPanel p = new JPanel();
@@ -114,9 +130,51 @@ public final class MeasurementTab extends JPanel {
 
     // ── Public API ────────────────────────────────────────────────────
 
-    /** Updates the CSV output path display. Call when the result folder changes. */
-    public void setOutputFolder(Path resultFolder) {
-        // Kept as a stable API for WorkflowWindow; the default CSV path is project/measurement.csv.
+    /** Updates the measured ROI folder selector and selects the current result if present. */
+    public void setResultRoiFolders(java.util.List<Path> resultRoots, Path selectedRoot) {
+        resultFolderCombo.removeAllItems();
+        resultFolderCombo.addItem(new ResultFolderItem(null));
+        if (resultRoots != null) {
+            for (Path root : resultRoots) resultFolderCombo.addItem(new ResultFolderItem(root));
+        }
+        if (selectedRoot != null) resultFolderCombo.setSelectedItem(new ResultFolderItem(selectedRoot));
+        Path selected = getSelectedResultRoiFolder();
+        resultFolderCombo.setToolTipText(selected != null ? selected.toString() : "None");
+    }
+
+    public Path getSelectedResultRoiFolder() {
+        Object item = resultFolderCombo.getSelectedItem();
+        return item instanceof ResultFolderItem ? ((ResultFolderItem) item).path : null;
+    }
+
+    public void addResultRoiSelectionListener(java.awt.event.ActionListener listener) {
+        resultFolderCombo.addActionListener(listener);
+    }
+
+    private static final class ResultFolderItem {
+        final Path path;
+
+        ResultFolderItem(Path path) {
+            this.path = path;
+        }
+
+        @Override public String toString() {
+            if (path == null || path.getFileName() == null) return "None";
+            String name = path.getFileName().toString();
+            if ("result_rois_area-disabled".equals(name)) return "disabled";
+            if ("result_rois".equals(name)) return "result_rois";
+            String prefix = "result_rois_area-th";
+            return name.startsWith(prefix) ? name.substring(prefix.length()) : name;
+        }
+
+        @Override public boolean equals(Object obj) {
+            return obj instanceof ResultFolderItem
+                && java.util.Objects.equals(path, ((ResultFolderItem) obj).path);
+        }
+
+        @Override public int hashCode() {
+            return java.util.Objects.hashCode(path);
+        }
     }
 
     public MeasurementRequest buildRequest(Path csvOutputPath) {

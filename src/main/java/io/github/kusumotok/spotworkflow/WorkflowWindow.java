@@ -20,6 +20,7 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 
@@ -196,6 +197,7 @@ public final class WorkflowWindow extends JFrame {
         segmentationTab.btnClearPreview.addActionListener(e -> cmdClearPreview());
         segmentationTab.btnMakeResultRoi.addActionListener(e -> cmdMakeResultRoi());
         measurementTab.btnMeasure.addActionListener(e -> cmdMeasure());
+        measurementTab.addResultRoiSelectionListener(e -> updateButtonStates());
 
         JPanel statusPanel = new JPanel(new BorderLayout());
         statusPanel.setBorder(BorderFactory.createCompoundBorder(
@@ -250,7 +252,7 @@ public final class WorkflowWindow extends JFrame {
         boolean busy      = controller.isBusy();
         boolean hasBound  = controller.getSession().hasBoundImage();
         boolean hasProject = controller.getSession().hasProjectFolder();
-        boolean canMeasure = hasProject || hasBound;
+        boolean canMeasure = measurementTab.getSelectedResultRoiFolder() != null;
         btnLoadResult.setEnabled(!busy);
         btnShowInFinder.setEnabled(!busy && hasProject);
         seedTab.btnApply.setEnabled(!busy && hasBound);
@@ -502,7 +504,8 @@ public final class WorkflowWindow extends JFrame {
         Path project = session.getProjectFolder();
         Path resultRoot = session.getResultRoiRoot();
         if (project != null && resultRoot != null && Files.isDirectory(resultRoot)) {
-            runMeasurement(project);
+            Path selectedRoot = measurementTab.getSelectedResultRoiFolder();
+            runMeasurement(project, selectedRoot != null ? selectedRoot : resultRoot, currentWorkflowParams());
             return;
         }
 
@@ -639,7 +642,7 @@ public final class WorkflowWindow extends JFrame {
         controller.getSession().setProjectFolder(project);
         projectField.setText(project != null ? project.toString() : "");
         projectField.setToolTipText(project != null ? project.toString() : "");
-        measurementTab.setOutputFolder(project);
+        refreshMeasurementResultFolders();
         updateButtonStates();
     }
 
@@ -763,10 +766,10 @@ public final class WorkflowWindow extends JFrame {
                     resultMeasurePanel.openFolder(resultRoot);
                     controller.setState(WorkflowController.State.READY);
                     setStatus("Result ROI saved: " + resultRoot);
-                    measurementTab.setOutputFolder(project);
+                    refreshMeasurementResultFolders(resultRoot);
                     if (measureAfter) {
                         tabs.setSelectedIndex(3);
-                        runMeasurement(project);
+                        runMeasurement(project, resultRoot, params);
                     }
                 } catch (CancellationException e) {
                     controller.setState(WorkflowController.State.IDLE);
@@ -782,9 +785,9 @@ public final class WorkflowWindow extends JFrame {
         }.execute();
     }
 
-    private void runMeasurement(Path resultFolder) {
+    private void runMeasurement(Path resultFolder, Path resultRoot, SegmentationParams params) {
         openResultMeasureRoot();
-        Path csvPath = resultFolder.resolve("measurement.csv");
+        Path csvPath = SegmentationController.measurementCsvFor(resultFolder, resultRoot, params);
         MeasurementRequest request = measurementTab.buildRequest(csvPath);
 
         controller.setState(WorkflowController.State.MEASURING);
@@ -819,9 +822,54 @@ public final class WorkflowWindow extends JFrame {
         SwingUtilities.invokeLater(() -> {
             openSeedRoiRoot();
             openResultMeasureRoot();
-            measurementTab.setOutputFolder(controller.getSession().getProjectFolder());
+            refreshMeasurementResultFolders();
             updateButtonStates();
         });
+    }
+
+    private void refreshMeasurementResultFolders() {
+        refreshMeasurementResultFolders(controller.getSession().getResultRoiRoot());
+    }
+
+    private void refreshMeasurementResultFolders(Path selectedRoot) {
+        Path project = controller.getSession().getProjectFolder();
+        List<Path> roots = new ArrayList<>();
+        if (project != null && Files.isDirectory(project)) {
+            addResultRootIfExists(roots, project.resolve("result_rois"));
+            try (java.nio.file.DirectoryStream<Path> stream = Files.newDirectoryStream(project, "result_rois_area-*")) {
+                for (Path root : stream) {
+                    if (Files.isDirectory(root)) roots.add(root);
+                }
+            } catch (Exception ignored) {
+                // Folder display is informational; measurement will still validate selected root.
+            }
+        }
+        roots.sort(WorkflowWindow::compareResultRootForDisplay);
+        measurementTab.setResultRoiFolders(roots, selectedRoot);
+    }
+
+    private static void addResultRootIfExists(List<Path> roots, Path root) {
+        if (root != null && Files.isDirectory(root)) roots.add(root);
+    }
+
+    private static int compareResultRootForDisplay(Path a, Path b) {
+        return Integer.compare(resultRootSortKey(a), resultRootSortKey(b));
+    }
+
+    private static int resultRootSortKey(Path root) {
+        if (root == null || root.getFileName() == null) return Integer.MAX_VALUE;
+        String name = root.getFileName().toString();
+        if ("result_rois_area-disabled".equals(name)) return -2;
+        if ("result_rois".equals(name)) return -1;
+        String prefix = "result_rois_area-th";
+        if (name.startsWith(prefix)) {
+            try {
+                return Integer.parseInt(name.substring(prefix.length()));
+            } catch (NumberFormatException ignored) {
+                return Integer.MAX_VALUE - 1;
+            }
+        }
+        return Integer.MAX_VALUE;
     }
 
     public WorkflowController getController() { return controller; }
