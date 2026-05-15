@@ -434,9 +434,30 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         bind(root, "prevT", KeyStroke.getKeyStroke(KeyEvent.VK_A, 0), e -> bumpTime(-1));
         bind(root, "nextT", KeyStroke.getKeyStroke(KeyEvent.VK_D, 0), e -> bumpTime(1));
         bind(root, "clear", KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), e -> clearSelection());
-        bind(root, "zoomIn", KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, 0), e -> leftPane.zoomAtCenter(1.18));
-        bind(root, "zoomInPlus", KeyStroke.getKeyStroke(KeyEvent.VK_PLUS, 0), e -> leftPane.zoomAtCenter(1.18));
-        bind(root, "zoomOut", KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, 0), e -> leftPane.zoomAtCenter(1.0 / 1.18));
+        bind(root, "zoomIn", KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, 0), e -> zoomAtPointerOrCenter(1.18));
+        bind(root, "zoomInPlus", KeyStroke.getKeyStroke(KeyEvent.VK_PLUS, 0), e -> zoomAtPointerOrCenter(1.18));
+        bind(root, "zoomInNumpad", KeyStroke.getKeyStroke(KeyEvent.VK_ADD, 0), e -> zoomAtPointerOrCenter(1.18));
+        bind(root, "zoomOut", KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, 0), e -> zoomAtPointerOrCenter(1.0 / 1.18));
+        bind(root, "zoomOutNumpad", KeyStroke.getKeyStroke(KeyEvent.VK_SUBTRACT, 0), e -> zoomAtPointerOrCenter(1.0 / 1.18));
+    }
+
+    private void zoomAtPointerOrCenter(double factor) {
+        PointerInfo pointerInfo = MouseInfo.getPointerInfo();
+        if (pointerInfo != null) {
+            Point screen = pointerInfo.getLocation();
+            if (zoomPaneAtScreenPoint(leftPane, screen, factor)) return;
+            if (zoomPaneAtScreenPoint(rightPane, screen, factor)) return;
+        }
+        leftPane.zoomAtCenter(factor);
+    }
+
+    private boolean zoomPaneAtScreenPoint(LinkerImagePane pane, Point screen, double factor) {
+        if (pane == null || screen == null || !pane.isShowing()) return false;
+        Point local = new Point(screen);
+        SwingUtilities.convertPointFromScreen(local, pane);
+        if (!pane.contains(local)) return false;
+        pane.zoomAt(local, factor);
+        return true;
     }
 
     private static void bind(JComponent c, String name, KeyStroke key, java.util.function.Consumer<ActionEvent> action) {
