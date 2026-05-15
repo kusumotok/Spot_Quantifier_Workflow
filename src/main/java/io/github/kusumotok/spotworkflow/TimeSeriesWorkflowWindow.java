@@ -622,7 +622,18 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         seedRoiPanel.openFolder(root);
         restoreSeedRoiSelection(seedObjectPath);
         tabs.setSelectedIndex(1);
+        bringWorkflowToFront();
         setStatus("Opened Seed Edit: " + seedObjectPath.getFileName());
+    }
+
+    private void bringWorkflowToFront() {
+        SwingUtilities.invokeLater(() -> {
+            if ((getExtendedState() & Frame.ICONIFIED) != 0) {
+                setExtendedState(getExtendedState() & ~Frame.ICONIFIED);
+            }
+            toFront();
+            requestFocus();
+        });
     }
 
     private Path resolveUntrackedSeedObjectPath(Path seedRoot, Path objectPath) {
