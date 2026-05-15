@@ -20,6 +20,8 @@ import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.lang.reflect.Method;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CancellationException;
 
@@ -479,7 +481,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             linkerDialog = new TimeSeriesTrackLinkerDialog(this, boundImage, tracksRoot, () -> {
                 trackTab.setTracksRoot(tracksRoot);
                 setStatus("Tracking saved: " + tracksRoot);
-            });
+            }, this::openSeedEditAtObject);
             linkerDialog.addWindowListener(new WindowAdapter() {
                 @Override public void windowClosed(WindowEvent e) {
                     if (e.getWindow() == linkerDialog) {
@@ -593,6 +595,35 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         seedRoiPanel.setContainerOrMode(true);
         seedRoiPanel.setProjectionMode(true, false, false);
         seedRoiPanel.openFolder(root);
+    }
+
+    private void openSeedEditAtObject(Path objectPath) {
+        if (objectPath == null || !Files.exists(objectPath) || boundImage == null) {
+            setStatus("Selected seed object is not available on disk.");
+            return;
+        }
+        Path root = Files.isDirectory(objectPath) ? objectPath.getParent() : objectPath.getParent();
+        if (root == null || !Files.isDirectory(root)) {
+            setStatus("Could not open selected seed object.");
+            return;
+        }
+        seedRoiPanel.setBindImage(boundImage);
+        seedRoiPanel.setContainerOrMode(true);
+        seedRoiPanel.setProjectionMode(true, false, false);
+        seedRoiPanel.openFolder(root);
+        restoreSeedRoiSelection(objectPath);
+        tabs.setSelectedIndex(1);
+        setStatus("Opened Seed Edit: " + objectPath.getFileName());
+    }
+
+    private void restoreSeedRoiSelection(Path objectPath) {
+        try {
+            Method restore = RoiExplorerPanel.class.getDeclaredMethod("restoreSelection", java.util.List.class);
+            restore.setAccessible(true);
+            restore.invoke(seedRoiPanel, Collections.singletonList(objectPath));
+        } catch (Exception e) {
+            setStatus("Seed Edit opened, but selection restore failed: " + e.getMessage());
+        }
     }
 
     private void cmdLoadProject() {

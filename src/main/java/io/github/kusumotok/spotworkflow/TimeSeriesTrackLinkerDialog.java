@@ -18,14 +18,17 @@ import java.awt.event.MouseEvent;
 import java.awt.event.MouseMotionAdapter;
 import java.awt.event.MouseWheelEvent;
 import java.awt.image.BufferedImage;
+import java.awt.image.IndexColorModel;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.function.Consumer;
 
 final class TimeSeriesTrackLinkerDialog extends JDialog {
     private final ImagePlus image;
     private final Path tracksRoot;
     private final Runnable onSaved;
+    private final Consumer<Path> openSeedEdit;
     private final TrackTreeIo io = new TrackTreeIo();
     private final TrackEditor editor = new TrackEditor();
     private final TrackValidator validator = new TrackValidator();
@@ -74,18 +77,21 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private TrackTree tree;
     private boolean updatingControls;
     private TrackEditor.ObjRef draggingLeftRef;
+    private TrackEditor.ObjRef lastClickedRef;
     private Side lastSelectedSide;
     private int lastPairT = 1;
     private double viewScale = 0.0;
     private double viewOffsetX = 0.0;
     private double viewOffsetY = 0.0;
 
-    TimeSeriesTrackLinkerDialog(Window owner, ImagePlus image, Path tracksRoot, Runnable onSaved) throws IOException {
+    TimeSeriesTrackLinkerDialog(Window owner, ImagePlus image, Path tracksRoot, Runnable onSaved,
+                                Consumer<Path> openSeedEdit) throws IOException {
         super(owner, "Track Linker", ModalityType.MODELESS);
         setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         this.image = image;
         this.tracksRoot = tracksRoot;
         this.onSaved = onSaved;
+        this.openSeedEdit = openSeedEdit;
         this.maxT = image != null ? Math.max(1, image.getNFrames()) : 1;
         this.maxZ = image != null ? Math.max(1, image.getNSlices()) : 1;
         this.maxC = image != null ? Math.max(1, image.getNChannels()) : 1;
@@ -161,7 +167,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         JButton openSeedEdit = new JButton("Open Seed Edit");
-        openSeedEdit.addActionListener(e -> status.setText("Open Seed Edit is not wired yet."));
+        openSeedEdit.addActionListener(e -> openSelectedInSeedEdit());
         JButton close = new JButton("Close");
         close.addActionListener(e -> dispose());
         actions.add(linkButton);
@@ -336,6 +342,17 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         leftPane.hoverRef = null;
         rightPane.hoverRef = null;
         lastSelectedSide = null;
+        lastClickedRef = null;
+    }
+
+    private void openSelectedInSeedEdit() {
+        TrackEditor.ObjRef ref = lastClickedRef != null ? lastClickedRef
+            : (leftList.getSelectedValue() != null ? leftList.getSelectedValue() : rightList.getSelectedValue());
+        if (ref == null || ref.obj.getSourcePath() == null) {
+            status.setText("Select an object before opening Seed Edit.");
+            return;
+        }
+        if (openSeedEdit != null) openSeedEdit.accept(ref.obj.getSourcePath());
     }
 
     private void save() {
@@ -473,7 +490,11 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     }
 
     private void objectClicked(Side side, TrackEditor.ObjRef selected) {
-        if (selected == null) return;
+        if (selected == null) {
+            clearSelection();
+            return;
+        }
+        lastClickedRef = selected;
         Side previousClickSide = lastSelectedSide;
         if (side == Side.LEFT) {
             if (previousClickSide == Side.RIGHT && rightList.getSelectedValue() != null) {
@@ -576,38 +597,63 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             if (v < min) min = v;
             if (v > maxVal) maxVal = v;
         }
-        double scale = maxVal > min ? 255.0 / (maxVal - min) : 1.0;
-        java.awt.image.WritableRaster raster = out.getRaster();
+        double minDisplay = displayMin(image, min);
+        double maxDisplay = displayMax(image, maxVal);
+        BufferedImage rgb = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
         for (int y = 0; y < h; y++) {
             int offset = y * w;
             for (int x = 0; x < w; x++) {
-                int gray = (int) Math.round((max[offset + x] - min) * scale);
-                raster.setSample(x, y, 0, clamp(gray));
+                int gray = scaleToByte(max[offset + x], minDisplay, maxDisplay);
+                rgb.setRGB(x, y, colorFor(image, gray));
             }
         }
-        return out;
+        return rgb;
     }
 
     private static BufferedImage createSliceImage(ImagePlus image, int c, int z, int t) {
         int w = image != null ? image.getWidth() : 1;
         int h = image != null ? image.getHeight() : 1;
-        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
+        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_INT_RGB);
         if (image == null) return out;
         int safeC = Math.max(1, Math.min(c, Math.max(1, image.getNChannels())));
         int safeZ = Math.max(1, Math.min(z, Math.max(1, image.getNSlices())));
         int safeT = Math.max(1, Math.min(t, Math.max(1, image.getNFrames())));
         ImageProcessor ip = image.getStack().getProcessor(image.getStackIndex(safeC, safeZ, safeT));
-        double min = ip.getMin();
-        double max = ip.getMax();
-        double scale = max > min ? 255.0 / (max - min) : 1.0;
-        java.awt.image.WritableRaster raster = out.getRaster();
+        double min = displayMin(image, ip.getMin());
+        double max = displayMax(image, ip.getMax());
         for (int y = 0; y < h; y++) {
             for (int x = 0; x < w; x++) {
-                int gray = (int) Math.round((ip.getf(x, y) - min) * scale);
-                raster.setSample(x, y, 0, clamp(gray));
+                int gray = scaleToByte(ip.getf(x, y), min, max);
+                out.setRGB(x, y, colorFor(image, gray));
             }
         }
         return out;
+    }
+
+    private static int scaleToByte(double value, double min, double max) {
+        if (max <= min) return 0;
+        return clamp((int) Math.round((value - min) * 255.0 / (max - min)));
+    }
+
+    private static double displayMin(ImagePlus image, double fallback) {
+        double v = image != null ? image.getDisplayRangeMin() : fallback;
+        return Double.isFinite(v) ? v : fallback;
+    }
+
+    private static double displayMax(ImagePlus image, double fallback) {
+        double v = image != null ? image.getDisplayRangeMax() : fallback;
+        return Double.isFinite(v) && v > displayMin(image, fallback) ? v : fallback;
+    }
+
+    private static int colorFor(ImagePlus image, int gray) {
+        IndexColorModel cm = null;
+        if (image != null && image.getProcessor() != null
+            && image.getProcessor().getColorModel() instanceof IndexColorModel) {
+            cm = (IndexColorModel) image.getProcessor().getColorModel();
+        }
+        if (cm == null) return new Color(gray, gray, gray).getRGB();
+        int idx = clamp(gray);
+        return new Color(cm.getRed(idx), cm.getGreen(idx), cm.getBlue(idx)).getRGB();
     }
 
     private static int clamp(int v) {
@@ -779,7 +825,8 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 }
                 Point p = toView(draw, ref.obj.centerX(), ref.obj.centerY());
                 if (showCentroids.isSelected()) {
-                    g2.fillOval(p.x - 4, p.y - 4, 8, 8);
+                    int r = selectedObj || hovered ? 3 : 2;
+                    g2.fillOval(p.x - r, p.y - r, r * 2, r * 2);
                 }
                 if (showLabels.isSelected()) {
                     g2.drawString(ref.obj.getGlobalId(), p.x + 6, p.y - 6);
