@@ -602,9 +602,9 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             setStatus("Selected seed object is not available on disk.");
             return;
         }
-        Path root = Files.isDirectory(objectPath) ? objectPath.getParent() : objectPath.getParent();
+        Path root = projectFolder != null ? projectFolder.resolve("seed_rois_untracked") : null;
         if (root == null || !Files.isDirectory(root)) {
-            setStatus("Could not open selected seed object.");
+            setStatus("Could not open seed_rois_untracked.");
             return;
         }
         seedRoiPanel.setBindImage(boundImage);
