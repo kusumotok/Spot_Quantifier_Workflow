@@ -267,8 +267,25 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     }
 
     private void selectionChanged() {
+        syncExistingLinkedSelection();
         updateSelectionState();
         repaintPanes();
+    }
+
+    private void syncExistingLinkedSelection() {
+        TrackEditor.ObjRef left = leftList.getSelectedValue();
+        TrackEditor.ObjRef right = rightList.getSelectedValue();
+        if (left != null && right == null) {
+            TrackEditor.ObjRef next = editor.nextObject(tree, left);
+            if (next != null && next.obj.firstT() == currentT() + 1) {
+                selectObject(rightList, rightModel, next.obj);
+            }
+        } else if (right != null && left == null) {
+            TrackEditor.ObjRef prev = editor.previousObject(tree, right);
+            if (prev != null && prev.obj.firstT() == currentT()) {
+                selectObject(leftList, leftModel, prev.obj);
+            }
+        }
     }
 
     private void updateSelectionState() {
@@ -592,14 +609,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
         @Override protected void paintChildren(Graphics g) {
             super.paintChildren(g);
-            Graphics2D g2 = (Graphics2D) g.create();
-            try {
-                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
-                if (showAllLinks.isSelected()) paintAllCurrentLinks(g2);
-                paintSelectedInterPaneLink(g2);
-            } finally {
-                g2.dispose();
-            }
         }
 
         private void paintSelectedInterPaneLink(Graphics2D g2) {
@@ -724,6 +733,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 if (frame != null) g2.drawImage(frame, draw.x, draw.y, draw.width, draw.height, null);
                 paintTrajectories(g2, draw);
                 paintObjects(g2, draw);
+                paintPaneLocalLinks(g2);
                 paintOverlayText(g2);
             } finally {
                 g2.dispose();
@@ -781,6 +791,50 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             }
         }
 
+        private void paintPaneLocalLinks(Graphics2D g2) {
+            if (showAllLinks.isSelected()) paintAllCurrentLinksInPane(g2);
+            paintSelectedLinkInPane(g2);
+        }
+
+        private void paintSelectedLinkInPane(Graphics2D g2) {
+            TrackEditor.ObjRef l = leftList.getSelectedValue();
+            TrackEditor.ObjRef r = rightList.getSelectedValue();
+            if (l == null || r == null) return;
+            Point a = left ? centroidPoint(l) : SwingUtilities.convertPoint(leftPane, leftPane.centroidPoint(l), this);
+            Point b = left ? SwingUtilities.convertPoint(rightPane, rightPane.centroidPoint(r), this) : centroidPoint(r);
+            paintLinkSegment(g2, a, b, new Color(255, 128, 0, 235), 2.6f);
+        }
+
+        private void paintAllCurrentLinksInPane(Graphics2D g2) {
+            java.util.Map<TrackTree.ObjNode, TrackEditor.ObjRef> rights = new java.util.IdentityHashMap<TrackTree.ObjNode, TrackEditor.ObjRef>();
+            for (int i = 0; i < rightModel.size(); i++) rights.put(rightModel.get(i).obj, rightModel.get(i));
+            for (int i = 0; i < leftModel.size(); i++) {
+                TrackEditor.ObjRef l = leftModel.get(i);
+                TrackEditor.ObjRef next = editor.nextObject(tree, l);
+                if (next == null) continue;
+                TrackEditor.ObjRef r = rights.get(next.obj);
+                if (r == null) continue;
+                Point a = left ? centroidPoint(l) : SwingUtilities.convertPoint(leftPane, leftPane.centroidPoint(l), this);
+                Point b = left ? SwingUtilities.convertPoint(rightPane, rightPane.centroidPoint(r), this) : centroidPoint(r);
+                paintLinkSegment(g2, a, b, new Color(0, 210, 255, 145), 1.4f);
+            }
+        }
+
+        private void paintLinkSegment(Graphics2D g2, Point a, Point b, Color color, float width) {
+            g2.setColor(color);
+            g2.setStroke(new BasicStroke(width));
+            g2.drawLine(a.x, a.y, b.x, b.y);
+            if (left) return;
+            double angle = Math.atan2(b.y - a.y, b.x - a.x);
+            int len = 9;
+            int x1 = b.x - (int) Math.round(Math.cos(angle - Math.PI / 7.0) * len);
+            int y1 = b.y - (int) Math.round(Math.sin(angle - Math.PI / 7.0) * len);
+            int x2 = b.x - (int) Math.round(Math.cos(angle + Math.PI / 7.0) * len);
+            int y2 = b.y - (int) Math.round(Math.sin(angle + Math.PI / 7.0) * len);
+            g2.drawLine(b.x, b.y, x1, y1);
+            g2.drawLine(b.x, b.y, x2, y2);
+        }
+
         private void drawRoi(Graphics2D g2, Rectangle draw, Roi roi) {
             Polygon poly = roi.getPolygon();
             if (poly == null || poly.npoints == 0) {
@@ -803,8 +857,23 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         private TrackEditor.ObjRef selectAt(int x, int y) {
             TrackEditor.ObjRef best = findAt(x, y);
             if (best != null) {
-                if (left) leftList.setSelectedValue(best, true);
-                else rightList.setSelectedValue(best, true);
+                if (left) {
+                    leftList.setSelectedValue(best, true);
+                    TrackEditor.ObjRef next = editor.nextObject(tree, best);
+                    if (next != null && next.obj.firstT() == currentT() + 1) {
+                        selectObject(rightList, rightModel, next.obj);
+                    } else {
+                        rightList.clearSelection();
+                    }
+                } else {
+                    rightList.setSelectedValue(best, true);
+                    TrackEditor.ObjRef prev = editor.previousObject(tree, best);
+                    if (prev != null && prev.obj.firstT() == currentT()) {
+                        selectObject(leftList, leftModel, prev.obj);
+                    } else {
+                        leftList.clearSelection();
+                    }
+                }
             }
             return best;
         }
