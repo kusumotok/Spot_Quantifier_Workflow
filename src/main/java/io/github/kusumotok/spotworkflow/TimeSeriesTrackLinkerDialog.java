@@ -57,8 +57,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private final JCheckBox showAllLinks = new JCheckBox("All T/T+1 links", false);
     private final JButton linkButton = new JButton("Link");
     private final JButton replaceButton = new JButton("Replace");
-    private final JButton unlinkPrevButton = new JButton("Unlink previous");
-    private final JButton unlinkNextButton = new JButton("Unlink next");
+    private final JButton unlinkButton = new JButton("Unlink selected");
     private final JButton clearSelectionButton = new JButton("Clear selection");
     private final JButton saveButton = new JButton("Save Tracking");
     private final JLabel selectionStatus = new JLabel(" ");
@@ -167,8 +166,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         close.addActionListener(e -> dispose());
         actions.add(linkButton);
         actions.add(replaceButton);
-        actions.add(unlinkPrevButton);
-        actions.add(unlinkNextButton);
+        actions.add(unlinkButton);
         actions.add(clearSelectionButton);
         actions.add(openSeedEdit);
         actions.add(saveButton);
@@ -222,8 +220,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         rightList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) selectionChanged(); });
         linkButton.addActionListener(e -> linkSelected(false));
         replaceButton.addActionListener(e -> linkSelected(true));
-        unlinkPrevButton.addActionListener(e -> unlinkPrevious());
-        unlinkNextButton.addActionListener(e -> unlinkNext());
+        unlinkButton.addActionListener(e -> unlinkSelected());
         clearSelectionButton.addActionListener(e -> clearSelection());
         saveButton.addActionListener(e -> save());
         installShortcuts();
@@ -278,8 +275,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         boolean both = left != null && right != null;
         linkButton.setEnabled(both);
         replaceButton.setEnabled(both);
-        unlinkPrevButton.setEnabled(right != null || left != null);
-        unlinkNextButton.setEnabled(left != null || right != null);
+        unlinkButton.setEnabled(both && left.parent == right.parent);
         selectionStatus.setText("Selected: T" + currentT() + " "
             + (left != null ? objLabel(left) : "none")
             + "  ->  T" + (currentT() + 1) + " "
@@ -314,33 +310,18 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             || existingPrev != null && existingPrev.obj != left.obj;
     }
 
-    private void unlinkPrevious() {
-        TrackEditor.ObjRef ref = rightList.getSelectedValue();
-        if (ref == null) ref = leftList.getSelectedValue();
-        if (ref == null) {
-            status.setText("Select an object to unlink from its previous object.");
+    private void unlinkSelected() {
+        TrackEditor.ObjRef left = leftList.getSelectedValue();
+        TrackEditor.ObjRef right = rightList.getSelectedValue();
+        if (left == null || right == null || left.parent != right.parent) {
+            status.setText("Select an existing T->T+1 link to unlink.");
             return;
         }
-        editor.unlinkToNewTrack(tree, ref);
+        editor.unlinkToNewTrack(tree, right);
         editor.pruneEmptyTracks(tree);
         rebuildTrajectoryCache();
         reloadPair();
-        status.setText("Unlinked previous connection for " + objLabel(ref) + ".");
-    }
-
-    private void unlinkNext() {
-        TrackEditor.ObjRef ref = leftList.getSelectedValue();
-        if (ref == null) ref = rightList.getSelectedValue();
-        TrackEditor.ObjRef next = editor.nextObject(tree, ref);
-        if (next == null) {
-            status.setText("No next object is linked to the selected object.");
-            return;
-        }
-        editor.unlinkToNewTrack(tree, next);
-        editor.pruneEmptyTracks(tree);
-        rebuildTrajectoryCache();
-        reloadPair();
-        status.setText("Unlinked next connection for " + objLabel(ref) + ".");
+        status.setText("Unlinked selected link: " + objLabel(left) + " -> " + objLabel(right) + ".");
     }
 
     private void clearSelection() {
@@ -412,7 +393,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private void installShortcuts() {
         JRootPane root = getRootPane();
         bind(root, "link", KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), e -> linkSelected(false));
-        bind(root, "unlinkNext", KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), e -> unlinkNext());
+        bind(root, "unlink", KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), e -> unlinkSelected());
         bind(root, "save", KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK), e -> save());
         bind(root, "prevT", KeyStroke.getKeyStroke(KeyEvent.VK_A, 0), e -> bumpTime(-1));
         bind(root, "nextT", KeyStroke.getKeyStroke(KeyEvent.VK_D, 0), e -> bumpTime(1));
@@ -493,27 +474,46 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
     private void objectClicked(Side side, TrackEditor.ObjRef selected) {
         if (selected == null) return;
+        Side previousClickSide = lastSelectedSide;
         if (side == Side.LEFT) {
-            if (lastSelectedSide == Side.RIGHT && rightList.getSelectedValue() != null) {
+            if (previousClickSide == Side.RIGHT && rightList.getSelectedValue() != null) {
                 leftList.setSelectedValue(selected, true);
                 linkSelected(false);
             } else {
                 leftList.setSelectedValue(selected, true);
-                rightList.clearSelection();
+                selectLinkedPeerFromLeft(selected);
                 lastSelectedSide = Side.LEFT;
             }
         } else {
-            if (lastSelectedSide == Side.LEFT && leftList.getSelectedValue() != null) {
+            if (previousClickSide == Side.LEFT && leftList.getSelectedValue() != null) {
                 rightList.setSelectedValue(selected, true);
                 linkSelected(false);
             } else {
                 rightList.setSelectedValue(selected, true);
-                leftList.clearSelection();
+                selectLinkedPeerFromRight(selected);
                 lastSelectedSide = Side.RIGHT;
             }
         }
         updateSelectionState();
         repaintPanes();
+    }
+
+    private void selectLinkedPeerFromLeft(TrackEditor.ObjRef left) {
+        TrackEditor.ObjRef next = editor.nextObject(tree, left);
+        if (next != null && next.obj.firstT() == currentT() + 1) {
+            selectObject(rightList, rightModel, next.obj);
+        } else {
+            rightList.clearSelection();
+        }
+    }
+
+    private void selectLinkedPeerFromRight(TrackEditor.ObjRef right) {
+        TrackEditor.ObjRef prev = editor.previousObject(tree, right);
+        if (prev != null && prev.obj.firstT() == currentT()) {
+            selectObject(leftList, leftModel, prev.obj);
+        } else {
+            leftList.clearSelection();
+        }
     }
 
     private static void fill(DefaultListModel<TrackEditor.ObjRef> model, List<TrackEditor.ObjRef> refs) {
