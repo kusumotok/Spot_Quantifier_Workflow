@@ -273,14 +273,9 @@ public final class WorkflowWindow extends JFrame {
                 segmentationTab.setPreviewActive(false, false);
                 break;
             case 1: // Seed Edit: ROI Explorer owns both main and sub overlays
-                seedRoiPanel.setOverlayEnabled(true);
                 resultMeasurePanel.setOverlayEnabled(false);
-                seedTab.setPreviewActive(false, false);
-                segmentationTab.setPreviewActive(false, false);
-                seedTab.clearOverlayOnly();
-                segmentationTab.clearOverlayOnly();
-                syncSeedEditSubImage();
-                if (seedRoiPanel.hasLoadedRoot()) seedRoiPanel.refreshOverlay();
+                RoiExplorerPreviewSupport.activateSeedEditPreview(seedRoiPanel, seedTab, segmentationTab,
+                    controller.getSession().getBoundImage(), currentZProjImage());
                 break;
             case 2: // Area / Result: 3D + Z-proj area preview
                 seedRoiPanel.setOverlayEnabled(false);
@@ -327,9 +322,7 @@ public final class WorkflowWindow extends JFrame {
             clearProjectForTargetChange();
         }
         controller.getSession().setBoundImage(imp);
-        seedRoiPanel.setBindImage(imp);
-        seedRoiPanel.setContainerOrMode(true);
-        seedRoiPanel.setProjectionMode(true, false, false);
+        RoiExplorerPreviewSupport.configureSeedEditPanel(seedRoiPanel, imp, currentZProjImage());
         // resultMeasurePanel は openResultMeasureRoot() で bind する
         // 同じ画像に両パネルを bind すると refreshOverlaysFor() で overlay が競合するため
         SpinnerNumberModel model = (SpinnerNumberModel) channelSpinner.getModel();
@@ -382,7 +375,8 @@ public final class WorkflowWindow extends JFrame {
     }
 
     private void syncSeedEditSubImage() {
-        syncSubImage(seedRoiPanel);
+        RoiExplorerPreviewSupport.syncSubImage(seedRoiPanel,
+            controller.getSession().getBoundImage(), currentZProjImage());
     }
 
     private void syncResultMeasureSubImage() {
@@ -391,22 +385,14 @@ public final class WorkflowWindow extends JFrame {
 
     private void syncSubImage(RoiExplorerPanel panel) {
         ImagePlus main = controller.getSession().getBoundImage();
-        if (main == null) {
-            panel.clearSubBindImage();
-            return;
-        }
+        RoiExplorerPreviewSupport.syncSubImage(panel, main, currentZProjImage());
+    }
+
+    private ImagePlus currentZProjImage() {
         Object selected = zprojCombo.getSelectedItem();
         String title = selected != null ? selected.toString() : null;
-        if (title == null || title.equals("None")) {
-            panel.clearSubBindImage();
-            return;
-        }
-        ImagePlus sub = WindowManager.getImage(title);
-        if (sub == null || sub == main) {
-            panel.clearSubBindImage();
-            return;
-        }
-        panel.setSubBindImage(sub);
+        if (title == null || title.equals("None")) return null;
+        return WindowManager.getImage(title);
     }
 
     private void refreshZProjCombo() {
@@ -658,10 +644,7 @@ public final class WorkflowWindow extends JFrame {
         ImagePlus image = controller.getSession().getBoundImage();
         if (seedRoot != null && Files.isDirectory(seedRoot)) {
             if (image != null) {
-                seedRoiPanel.setBindImage(image);
-                seedRoiPanel.setContainerOrMode(true);
-                seedRoiPanel.setProjectionMode(true, false, false);
-                syncSeedEditSubImage();
+                RoiExplorerPreviewSupport.configureSeedEditPanel(seedRoiPanel, image, currentZProjImage());
             }
             seedRoiPanel.openFolder(seedRoot);
         }

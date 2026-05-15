@@ -200,16 +200,10 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
 
     private void applyPreviewPolicy(int current) {
         if (current == 1) {
-            seedRoiPanel.setOverlayEnabled(false);
-            seedTab.setPreviewActive(false, false);
-            areaTab.setPreviewActive(false, false);
-            seedTab.clearOverlayOnly();
-            areaTab.clearOverlayOnly();
-            syncSeedEditSubImage();
-            seedRoiPanel.setOverlayEnabled(true);
+            RoiExplorerPreviewSupport.activateSeedEditPreview(seedRoiPanel, seedTab, areaTab,
+                boundImage, zprojImage);
         } else if (previousTabIndex == 1) {
             seedRoiPanel.setOverlayEnabled(false);
-            seedRoiPanel.cleanupPreview();
         } else {
             seedRoiPanel.setOverlayEnabled(false);
         }
@@ -239,11 +233,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     }
 
     private void syncSeedEditSubImage() {
-        if (boundImage == null || zprojImage == null || zprojImage == boundImage) {
-            seedRoiPanel.clearSubBindImage();
-        } else {
-            seedRoiPanel.setSubBindImage(zprojImage);
-        }
+        RoiExplorerPreviewSupport.syncSubImage(seedRoiPanel, boundImage, zprojImage);
     }
 
     private void syncTrackSubImage() {
@@ -327,11 +317,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         seedTab.updateImage(image);
         areaTab.updateImage(image);
         trackTab.setImage(image);
-        if (image != null) {
-            seedRoiPanel.setBindImage(image);
-            seedRoiPanel.setContainerOrMode(true);
-            seedRoiPanel.setProjectionMode(true, false, false);
-        }
+        RoiExplorerPreviewSupport.configureSeedEditPanel(seedRoiPanel, image, zprojImage);
         refreshZProjCombo();
         syncSharedParamsToTabs();
         if (image == null) {
@@ -628,9 +614,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
 
     private void openSeedRoiRoot(Path root) {
         if (root == null || !Files.isDirectory(root) || boundImage == null) return;
-        seedRoiPanel.setBindImage(boundImage);
-        seedRoiPanel.setContainerOrMode(true);
-        seedRoiPanel.setProjectionMode(true, false, false);
+        RoiExplorerPreviewSupport.configureSeedEditPanel(seedRoiPanel, boundImage, zprojImage);
         seedRoiPanel.openFolder(root);
     }
 
@@ -645,9 +629,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             return;
         }
         Path seedObjectPath = resolveUntrackedSeedObjectPath(root, objectPath);
-        seedRoiPanel.setBindImage(boundImage);
-        seedRoiPanel.setContainerOrMode(true);
-        seedRoiPanel.setProjectionMode(true, false, false);
+        RoiExplorerPreviewSupport.configureSeedEditPanel(seedRoiPanel, boundImage, zprojImage);
         seedRoiPanel.openFolder(root);
         restoreSeedRoiSelection(seedObjectPath);
         tabs.setSelectedIndex(1);
