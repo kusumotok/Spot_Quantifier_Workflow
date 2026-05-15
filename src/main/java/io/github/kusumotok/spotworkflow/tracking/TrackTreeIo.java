@@ -153,14 +153,7 @@ public final class TrackTreeIo {
     }
 
     public static String sourceObjId(int t, Path source) {
-        return canonicalSourceObjId("t" + String.format("%03d", t) + "_" + stemName(source));
-    }
-
-    public static String canonicalSourceObjId(String sourceObjId) {
-        if (sourceObjId == null) return "";
-        int sep = sourceObjId.indexOf('_');
-        if (sep <= 0 || sep >= sourceObjId.length() - 1) return sourceObjId;
-        return sourceObjId.substring(0, sep) + "_" + stripObjPrefix(sourceObjId.substring(sep + 1));
+        return "t" + String.format("%03d", t) + "_" + stemName(source);
     }
 
     public static List<Roi> readRois(Path object) throws IOException {
@@ -258,9 +251,4 @@ public final class TrackTreeIo {
         return name.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
 
-    private static String stripObjPrefix(String name) {
-        if (name == null) return "";
-        String stripped = name.replaceFirst("(?i)^obj[-_]+", "");
-        return stripped.isEmpty() ? name : stripped;
-    }
 }

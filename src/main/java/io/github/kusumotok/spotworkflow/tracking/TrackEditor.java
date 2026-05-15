@@ -90,7 +90,7 @@ public final class TrackEditor {
         }
 
         @Override public String toString() {
-            return obj.getGlobalId() + "  " + obj.getSourceObjId();
+            return obj.getSourceObjId();
         }
     }
 }

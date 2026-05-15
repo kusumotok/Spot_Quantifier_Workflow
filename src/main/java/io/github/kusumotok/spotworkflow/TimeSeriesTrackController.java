@@ -130,7 +130,7 @@ public final class TimeSeriesTrackController {
         for (TrackTree.Entry child : parent.getChildren()) {
             if (child instanceof TrackTree.ObjNode) {
                 TrackTree.ObjNode obj = (TrackTree.ObjNode) child;
-                out.put(TrackTreeIo.canonicalSourceObjId(obj.getSourceObjId()), new ObjLocation(parent, obj));
+                out.put(obj.getSourceObjId(), new ObjLocation(parent, obj));
             } else if (child instanceof TrackTree.TrackNode) {
                 collectObjLocations((TrackTree.TrackNode) child, out);
             }
@@ -149,7 +149,7 @@ public final class TimeSeriesTrackController {
             TrackTree.Entry child = it.next();
             if (child instanceof TrackTree.ObjNode) {
                 TrackTree.ObjNode obj = (TrackTree.ObjNode) child;
-                if (!currentSourceIds.contains(TrackTreeIo.canonicalSourceObjId(obj.getSourceObjId()))) {
+                if (!currentSourceIds.contains(obj.getSourceObjId())) {
                     it.remove();
                     removed++;
                 }

@@ -330,8 +330,7 @@ final class TimeSeriesTrackTab extends JPanel {
         for (TrackTree.Entry child : track.getChildren()) {
             if (child instanceof TrackTree.ObjNode) {
                 TrackTree.ObjNode obj = (TrackTree.ObjNode) child;
-                indent(sb, depth + 1).append(obj.getGlobalId())
-                    .append(" obj ").append(obj.getSourceObjId())
+                indent(sb, depth + 1).append("obj ").append(obj.getSourceObjId())
                     .append(" [T").append(obj.firstT()).append("]\n");
             } else if (child instanceof TrackTree.TrackNode) {
                 renderTrack(sb, (TrackTree.TrackNode) child, depth + 1);

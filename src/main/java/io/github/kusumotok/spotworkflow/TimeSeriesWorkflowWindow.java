@@ -676,7 +676,6 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         if (sep <= 0 || sep >= sourceId.length() - 1) return objectPath;
         String time = sourceId.substring(0, sep);
         String object = sourceId.substring(sep + 1);
-        if (!object.matches("(?i)obj[-_].*")) object = "obj-" + object;
         Path candidate = seedRoot.resolve(time).resolve(object);
         return Files.exists(candidate) ? candidate : objectPath;
     }

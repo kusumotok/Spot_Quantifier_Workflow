@@ -585,8 +585,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     }
 
     private static String objLabel(TrackEditor.ObjRef ref) {
-        return ref.obj.getGlobalId() + " / " + ref.obj.getSourceObjId()
-            + " [track " + ref.parent.getGlobalId() + "]";
+        return ref.obj.getSourceObjId() + " [track " + ref.parent.getGlobalId() + "]";
     }
 
     private static BufferedImage createMaxProjection(ImagePlus image, int c, int t) {
@@ -1089,8 +1088,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             JLabel label = (JLabel) super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
             if (value instanceof TrackEditor.ObjRef) {
                 TrackEditor.ObjRef ref = (TrackEditor.ObjRef) value;
-                label.setText(ref.obj.getGlobalId() + "  " + ref.obj.getSourceObjId()
-                    + "    track " + ref.parent.getGlobalId());
+                label.setText(ref.obj.getSourceObjId() + "    track " + ref.parent.getGlobalId());
             }
             return label;
         }
