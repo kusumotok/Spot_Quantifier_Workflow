@@ -10,8 +10,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
+import java.util.Iterator;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
@@ -70,6 +73,91 @@ public final class TimeSeriesTrackController {
         treeIo.write(tracksRoot, tree);
         report(progress, "Seed tracks saved: " + tracksRoot);
         return tracksRoot;
+    }
+
+    public Path syncTracksWithUntrackedSeedRois(Path projectFolder, Consumer<String> progress) throws Exception {
+        Path untrackedRoot = projectFolder.resolve("seed_rois_untracked");
+        Path tracksRoot = projectFolder.resolve("seed_tracks");
+        if (!Files.isDirectory(untrackedRoot) || !Files.isDirectory(tracksRoot)) return tracksRoot;
+
+        TrackTree tree = treeIo.read(tracksRoot);
+        Map<String, ObjectInfo> current = readAllObjectsBySourceId(untrackedRoot);
+        Map<String, ObjLocation> existing = new LinkedHashMap<String, ObjLocation>();
+        collectObjLocations(tree, existing);
+
+        int removed = removeMissingObjects(tree, current.keySet());
+        int updated = 0;
+        int added = 0;
+        for (Map.Entry<String, ObjectInfo> entry : current.entrySet()) {
+            ObjLocation location = existing.get(entry.getKey());
+            if (location != null) {
+                location.obj.setSourceObjId(entry.getKey());
+                location.obj.setRois(entry.getValue().rois);
+                updated++;
+                continue;
+            }
+            TrackTree.TrackNode track = new TrackTree.TrackNode("", "track");
+            TrackTree.ObjNode obj = new TrackTree.ObjNode("", entry.getKey());
+            obj.setRois(entry.getValue().rois);
+            track.addChild(obj);
+            tree.addTrack(track);
+            added++;
+        }
+        new io.github.kusumotok.spotworkflow.tracking.TrackEditor().pruneEmptyTracks(tree);
+        treeIo.write(tracksRoot, tree);
+        report(progress, "Synced seed_tracks with seed_rois_untracked: +" + added
+            + ", -" + removed + ", updated " + updated + ".");
+        return tracksRoot;
+    }
+
+    private static Map<String, ObjectInfo> readAllObjectsBySourceId(Path untrackedRoot) throws IOException {
+        Map<String, ObjectInfo> out = new LinkedHashMap<String, ObjectInfo>();
+        for (Path timeRoot : listTimeRoots(untrackedRoot)) {
+            int t = parseTimeFolder(timeRoot);
+            for (ObjectInfo info : readObjects(timeRoot, t)) {
+                out.put(TrackTreeIo.sourceObjId(t, info.path), info);
+            }
+        }
+        return out;
+    }
+
+    private static void collectObjLocations(TrackTree tree, Map<String, ObjLocation> out) {
+        if (tree == null) return;
+        for (TrackTree.TrackNode track : tree.getTracks()) collectObjLocations(track, out);
+    }
+
+    private static void collectObjLocations(TrackTree.TrackNode parent, Map<String, ObjLocation> out) {
+        for (TrackTree.Entry child : parent.getChildren()) {
+            if (child instanceof TrackTree.ObjNode) {
+                TrackTree.ObjNode obj = (TrackTree.ObjNode) child;
+                out.put(TrackTreeIo.canonicalSourceObjId(obj.getSourceObjId()), new ObjLocation(parent, obj));
+            } else if (child instanceof TrackTree.TrackNode) {
+                collectObjLocations((TrackTree.TrackNode) child, out);
+            }
+        }
+    }
+
+    private static int removeMissingObjects(TrackTree tree, Set<String> currentSourceIds) {
+        int removed = 0;
+        for (TrackTree.TrackNode track : tree.getTracks()) removed += removeMissingObjects(track, currentSourceIds);
+        return removed;
+    }
+
+    private static int removeMissingObjects(TrackTree.TrackNode parent, Set<String> currentSourceIds) {
+        int removed = 0;
+        for (Iterator<TrackTree.Entry> it = parent.mutableChildren().iterator(); it.hasNext();) {
+            TrackTree.Entry child = it.next();
+            if (child instanceof TrackTree.ObjNode) {
+                TrackTree.ObjNode obj = (TrackTree.ObjNode) child;
+                if (!currentSourceIds.contains(TrackTreeIo.canonicalSourceObjId(obj.getSourceObjId()))) {
+                    it.remove();
+                    removed++;
+                }
+            } else if (child instanceof TrackTree.TrackNode) {
+                removed += removeMissingObjects((TrackTree.TrackNode) child, currentSourceIds);
+            }
+        }
+        return removed;
     }
 
     private static List<Path> listTimeRoots(Path root) throws IOException {
@@ -212,6 +300,16 @@ public final class TimeSeriesTrackController {
             this.rois = rois;
             this.centroid = centroid;
             this.radius = radius;
+        }
+    }
+
+    private static final class ObjLocation {
+        final TrackTree.TrackNode parent;
+        final TrackTree.ObjNode obj;
+
+        ObjLocation(TrackTree.TrackNode parent, TrackTree.ObjNode obj) {
+            this.parent = parent;
+            this.obj = obj;
         }
     }
 

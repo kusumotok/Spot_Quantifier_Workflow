@@ -83,10 +83,16 @@ public final class TrackTree {
         public String getGlobalId() { return globalId; }
         public void setGlobalId(String globalId) { this.globalId = globalId; }
         public String getSourceObjId() { return sourceObjId; }
+        public void setSourceObjId(String sourceObjId) { this.sourceObjId = sourceObjId; }
         public Path getSourcePath() { return sourcePath; }
         public void setSourcePath(Path sourcePath) { this.sourcePath = sourcePath; }
         public List<Roi> getRois() { return Collections.unmodifiableList(rois); }
         public void addRoi(Roi roi) { if (roi != null) rois.add(roi); }
+        public void setRois(List<Roi> nextRois) {
+            rois.clear();
+            if (nextRois == null) return;
+            for (Roi roi : nextRois) addRoi(roi);
+        }
 
         public int firstT() {
             int min = Integer.MAX_VALUE;

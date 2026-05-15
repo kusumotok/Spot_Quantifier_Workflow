@@ -119,6 +119,18 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         requestFocus();
     }
 
+    void reloadFromDisk() {
+        try {
+            tree = io.read(tracksRoot);
+            rebuildTrajectoryCache();
+            frameCache.clear();
+            reloadPair();
+            status.setText("Reloaded tracking from disk.");
+        } catch (IOException e) {
+            status.setText("Reload failed: " + e.getMessage());
+        }
+    }
+
     private void buildUi() {
         setLayout(new BorderLayout(6, 6));
         add(buildTop(), BorderLayout.NORTH);

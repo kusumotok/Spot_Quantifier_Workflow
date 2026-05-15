@@ -62,6 +62,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private TimeSeriesTrackLinkerDialog linkerDialog;
     private Path linkerTracksRoot;
     private ImagePlus linkerImage;
+    private boolean seedTrackSyncRunning;
 
     public static synchronized TimeSeriesWorkflowWindow getInstance() {
         if (instance == null) instance = new TimeSeriesWorkflowWindow();
@@ -72,6 +73,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         super("Spot Quantifier Time Series");
         setDefaultCloseOperation(WindowConstants.HIDE_ON_CLOSE);
         buildUI();
+        seedRoiPanel.setDiskChangeListener(this::syncSeedTracksAfterSeedEdit);
         pack();
         setMinimumSize(new Dimension(480, 560));
         Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
@@ -504,6 +506,33 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             setStatus("Linker error: " + e.getMessage());
             JOptionPane.showMessageDialog(this, e.getMessage(), "Track Linker", JOptionPane.ERROR_MESSAGE);
         }
+    }
+
+    private void syncSeedTracksAfterSeedEdit() {
+        if (projectFolder == null || seedTrackSyncRunning) return;
+        Path tracksRoot = projectFolder.resolve("seed_tracks");
+        if (!Files.isDirectory(tracksRoot)) return;
+        seedTrackSyncRunning = true;
+        new SwingWorker<Path, String>() {
+            @Override protected Path doInBackground() throws Exception {
+                return trackCtrl.syncTracksWithUntrackedSeedRois(projectFolder, this::publish);
+            }
+            @Override protected void process(List<String> chunks) {
+                if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
+            }
+            @Override protected void done() {
+                seedTrackSyncRunning = false;
+                try {
+                    Path root = get();
+                    trackTab.setTracksRoot(root);
+                    if (linkerDialog != null && linkerDialog.isDisplayable()) linkerDialog.reloadFromDisk();
+                    setStatus("Seed Track synced from Seed Edit.");
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    setStatus("Seed Track sync error: " + cause.getMessage());
+                }
+            }
+        }.execute();
     }
 
     private void cmdMakeResultRois() {
