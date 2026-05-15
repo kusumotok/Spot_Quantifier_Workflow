@@ -45,6 +45,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private final JList<TrackEditor.ObjRef> rightList = new JList<TrackEditor.ObjRef>(rightModel);
     private final LinkerImagePane leftPane = new LinkerImagePane(true);
     private final LinkerImagePane rightPane = new LinkerImagePane(false);
+    private final LinkerImageArea imageArea = new LinkerImageArea();
 
     private final JCheckBox zProjMode = new JCheckBox("Z-proj", true);
     private final JCheckBox zSync = new JCheckBox("Z sync", true);
@@ -53,7 +54,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private final JCheckBox showCentroids = new JCheckBox("Centroids", true);
     private final JCheckBox showTrajectories = new JCheckBox("Trajectories", true);
     private final JCheckBox showLabels = new JCheckBox("Labels", true);
-    private final JCheckBox showAllLinks = new JCheckBox("All links", false);
+    private final JCheckBox showAllLinks = new JCheckBox("All T/T+1 links", false);
     private final JButton linkButton = new JButton("Link");
     private final JButton replaceButton = new JButton("Replace");
     private final JButton unlinkPrevButton = new JButton("Unlink previous");
@@ -113,19 +114,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private void buildUi() {
         setLayout(new BorderLayout(6, 6));
         add(buildTop(), BorderLayout.NORTH);
-
-        JPanel imageViews = new JPanel(new GridLayout(1, 2, 8, 0));
-        imageViews.add(panelWithTitle("Left: T", leftPane));
-        imageViews.add(panelWithTitle("Right: T+1", rightPane));
-
-        JPanel lists = new JPanel(new GridLayout(1, 2, 8, 0));
-        lists.add(panelWithTitle("Objects at T", leftList));
-        lists.add(panelWithTitle("Objects at T+1", rightList));
-        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT, imageViews, lists);
-        split.setResizeWeight(0.88);
-        split.setDividerLocation(620);
-        add(split, BorderLayout.CENTER);
-
+        add(imageArea, BorderLayout.CENTER);
         add(buildBottom(), BorderLayout.SOUTH);
     }
 
@@ -146,6 +135,14 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         toolbar.add(resetView);
         top.add(toolbar, BorderLayout.NORTH);
 
+        selectionStatus.setBorder(BorderFactory.createEmptyBorder(0, 6, 0, 6));
+        selectionStatus.setForeground(new Color(60, 60, 60));
+        top.add(selectionStatus, BorderLayout.SOUTH);
+        return top;
+    }
+
+    private JComponent buildBottom() {
+        JPanel bottom = new JPanel(new BorderLayout(0, 2));
         JPanel axes = new JPanel(new GridBagLayout());
         axes.setBorder(BorderFactory.createTitledBorder("Axes"));
         GridBagConstraints gc = new GridBagConstraints();
@@ -159,16 +156,8 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         axes.add(twoAxisRow(leftCAxis, rightCAxis), gc);
         gc.gridy++;
         axes.add(twoAxisRow(leftZAxis, rightZAxis), gc);
-        top.add(axes, BorderLayout.CENTER);
+        bottom.add(axes, BorderLayout.NORTH);
 
-        selectionStatus.setBorder(BorderFactory.createEmptyBorder(0, 6, 0, 6));
-        selectionStatus.setForeground(new Color(60, 60, 60));
-        top.add(selectionStatus, BorderLayout.SOUTH);
-        return top;
-    }
-
-    private JComponent buildBottom() {
-        JPanel bottom = new JPanel(new BorderLayout(0, 2));
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         JButton openSeedEdit = new JButton("Open Seed Edit");
         openSeedEdit.addActionListener(e -> status.setText("Open Seed Edit is not wired yet."));
@@ -182,7 +171,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         actions.add(openSeedEdit);
         actions.add(saveButton);
         actions.add(close);
-        bottom.add(actions, BorderLayout.NORTH);
+        bottom.add(actions, BorderLayout.CENTER);
         status.setBorder(BorderFactory.createEmptyBorder(0, 8, 4, 8));
         bottom.add(status, BorderLayout.SOUTH);
         return bottom;
@@ -402,6 +391,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private void repaintPanes() {
         leftPane.repaint();
         rightPane.repaint();
+        imageArea.repaint();
     }
 
     private int currentT() {
@@ -421,6 +411,9 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         bind(root, "prevT", KeyStroke.getKeyStroke(KeyEvent.VK_A, 0), e -> bumpTime(-1));
         bind(root, "nextT", KeyStroke.getKeyStroke(KeyEvent.VK_D, 0), e -> bumpTime(1));
         bind(root, "clear", KeyStroke.getKeyStroke(KeyEvent.VK_ESCAPE, 0), e -> clearSelection());
+        bind(root, "zoomIn", KeyStroke.getKeyStroke(KeyEvent.VK_EQUALS, 0), e -> leftPane.zoomAtCenter(1.18));
+        bind(root, "zoomInPlus", KeyStroke.getKeyStroke(KeyEvent.VK_PLUS, 0), e -> leftPane.zoomAtCenter(1.18));
+        bind(root, "zoomOut", KeyStroke.getKeyStroke(KeyEvent.VK_MINUS, 0), e -> leftPane.zoomAtCenter(1.0 / 1.18));
     }
 
     private static void bind(JComponent c, String name, KeyStroke key, java.util.function.Consumer<ActionEvent> action) {
@@ -590,6 +583,68 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         return Math.max(0, Math.min(255, v));
     }
 
+    private final class LinkerImageArea extends JPanel {
+        LinkerImageArea() {
+            super(new GridLayout(1, 2, 8, 0));
+            add(panelWithTitle("Left: T", leftPane));
+            add(panelWithTitle("Right: T+1", rightPane));
+        }
+
+        @Override protected void paintChildren(Graphics g) {
+            super.paintChildren(g);
+            Graphics2D g2 = (Graphics2D) g.create();
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                if (showAllLinks.isSelected()) paintAllCurrentLinks(g2);
+                paintSelectedInterPaneLink(g2);
+            } finally {
+                g2.dispose();
+            }
+        }
+
+        private void paintSelectedInterPaneLink(Graphics2D g2) {
+            TrackEditor.ObjRef left = leftList.getSelectedValue();
+            TrackEditor.ObjRef right = rightList.getSelectedValue();
+            if (left == null || right == null) return;
+            Point a = convertPoint(leftPane, leftPane.centroidPoint(left));
+            Point b = convertPoint(rightPane, rightPane.centroidPoint(right));
+            paintLink(g2, a, b, new Color(255, 128, 0, 235), 2.6f);
+        }
+
+        private void paintAllCurrentLinks(Graphics2D g2) {
+            java.util.Map<TrackTree.ObjNode, TrackEditor.ObjRef> rights = new java.util.IdentityHashMap<TrackTree.ObjNode, TrackEditor.ObjRef>();
+            for (int i = 0; i < rightModel.size(); i++) rights.put(rightModel.get(i).obj, rightModel.get(i));
+            for (int i = 0; i < leftModel.size(); i++) {
+                TrackEditor.ObjRef left = leftModel.get(i);
+                TrackEditor.ObjRef next = editor.nextObject(tree, left);
+                if (next == null) continue;
+                TrackEditor.ObjRef right = rights.get(next.obj);
+                if (right == null) continue;
+                Point a = convertPoint(leftPane, leftPane.centroidPoint(left));
+                Point b = convertPoint(rightPane, rightPane.centroidPoint(right));
+                paintLink(g2, a, b, new Color(0, 210, 255, 145), 1.4f);
+            }
+        }
+
+        private Point convertPoint(Component source, Point p) {
+            return SwingUtilities.convertPoint(source, p, this);
+        }
+
+        private void paintLink(Graphics2D g2, Point a, Point b, Color color, float width) {
+            g2.setColor(color);
+            g2.setStroke(new BasicStroke(width));
+            g2.drawLine(a.x, a.y, b.x, b.y);
+            double angle = Math.atan2(b.y - a.y, b.x - a.x);
+            int len = 9;
+            int x1 = b.x - (int) Math.round(Math.cos(angle - Math.PI / 7.0) * len);
+            int y1 = b.y - (int) Math.round(Math.sin(angle - Math.PI / 7.0) * len);
+            int x2 = b.x - (int) Math.round(Math.cos(angle + Math.PI / 7.0) * len);
+            int y2 = b.y - (int) Math.round(Math.sin(angle + Math.PI / 7.0) * len);
+            g2.drawLine(b.x, b.y, x1, y1);
+            g2.drawLine(b.x, b.y, x2, y2);
+        }
+    }
+
     private final class LinkerImagePane extends JPanel {
         private final boolean left;
         private int time;
@@ -669,7 +724,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 if (frame != null) g2.drawImage(frame, draw.x, draw.y, draw.width, draw.height, null);
                 paintTrajectories(g2, draw);
                 paintObjects(g2, draw);
-                paintSelectedLink(g2, draw);
                 paintOverlayText(g2);
             } finally {
                 g2.dispose();
@@ -720,24 +774,11 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 for (int i = 1; i < trajectory.points.size(); i++) {
                     TrajectoryPoint a = trajectory.points.get(i - 1);
                     TrajectoryPoint b = trajectory.points.get(i);
-                    if (!showAllLinks.isSelected() && a.t != currentT() && b.t != currentT() + 1) continue;
                     Point p1 = toView(draw, a.x, a.y);
                     Point p2 = toView(draw, b.x, b.y);
                     g2.drawLine(p1.x, p1.y, p2.x, p2.y);
                 }
             }
-        }
-
-        private void paintSelectedLink(Graphics2D g2, Rectangle draw) {
-            TrackEditor.ObjRef l = leftList.getSelectedValue();
-            TrackEditor.ObjRef r = rightList.getSelectedValue();
-            if (l == null || r == null) return;
-            TrackEditor.ObjRef ref = left ? l : r;
-            Point p = toView(draw, ref.obj.centerX(), ref.obj.centerY());
-            g2.setColor(new Color(255, 128, 0, 230));
-            g2.setStroke(new BasicStroke(2.3f));
-            if (left) g2.drawLine(p.x, p.y, getWidth(), p.y);
-            else g2.drawLine(0, p.y, p.x, p.y);
         }
 
         private void drawRoi(Graphics2D g2, Rectangle draw, Roi roi) {
@@ -827,6 +868,14 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             viewOffsetX = p.x - imageX * viewScale;
             viewOffsetY = p.y - imageY * viewScale;
             repaintPanes();
+        }
+
+        private void zoomAtCenter(double factor) {
+            zoomAt(new Point(getWidth() / 2, getHeight() / 2), factor);
+        }
+
+        private Point centroidPoint(TrackEditor.ObjRef ref) {
+            return toView(imageRect(), ref.obj.centerX(), ref.obj.centerY());
         }
 
         private Rectangle imageRect() {

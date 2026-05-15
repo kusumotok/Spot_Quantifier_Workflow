@@ -60,15 +60,9 @@ final class TimeSeriesTrackTab extends JPanel {
         add(actions, BorderLayout.NORTH);
         branchView.setEditable(false);
         branchView.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        JSplitPane split = new JSplitPane(JSplitPane.VERTICAL_SPLIT,
-            new JScrollPane(branchView), new JScrollPane(table));
-        split.setResizeWeight(0.93);
-        split.setDividerLocation(0.93);
-        add(split, BorderLayout.CENTER);
+        add(new JScrollPane(branchView), BorderLayout.CENTER);
         add(statusLabel, BorderLayout.SOUTH);
 
-        table.setFillsViewportHeight(true);
-        table.setAutoCreateRowSorter(true);
         btnRefresh.addActionListener(e -> reload());
         btnClearOverlay.addActionListener(e -> clearOverlay());
     }
