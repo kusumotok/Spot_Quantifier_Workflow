@@ -2,6 +2,8 @@ package io.github.kusumotok.spotworkflow;
 
 import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementRequest;
 import io.github.kusumotok.roiexplorer.service.measure.MeasurementColumn;
+import io.github.kusumotok.roiexplorer.service.measure.MeasurementTargetMode;
+import io.github.kusumotok.roiexplorer.service.measure.RoiCollectionMode;
 import io.github.kusumotok.roiexplorer.service.measure.XyzObjectProfile;
 import io.github.kusumotok.roiexplorer.service.measure.XyztTrackComparisonProfile;
 
@@ -161,6 +163,15 @@ public final class TimeSeriesMeasurementTab extends JPanel {
             .withEnabledColumns(enabled)
             .withShowResultsTable(showTableCheck.isSelected())
             .withMeasureAll(true);
+        if (preset == MeasurementPreset.XYZ_OBJECT) {
+            request = request
+                .withTargetMode(MeasurementTargetMode.ROI_CONTAINING_FOLDERS)
+                .withCollectionMode(RoiCollectionMode.DIRECT);
+        } else {
+            request = request
+                .withTargetMode(MeasurementTargetMode.ROOT_CHILDREN_ONLY)
+                .withCollectionMode(RoiCollectionMode.FLATTEN);
+        }
         if (saveCsvCheck.isSelected() && csvPath != null) request = request.withCsvOutput(csvPath);
         return request;
     }
