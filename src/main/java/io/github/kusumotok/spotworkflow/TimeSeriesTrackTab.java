@@ -182,6 +182,16 @@ final class TimeSeriesTrackTab extends JPanel {
         }
     }
 
+    void addTrajectoryOverlay(ImagePlus target, Overlay overlay, boolean projection) {
+        if (target == null || overlay == null || tracks.isEmpty()) return;
+        int currentC = currentC(target);
+        int currentT = currentT(target);
+        int currentZ = projection ? 1 : currentZFor(target);
+        for (Track track : tracks) {
+            addTrajectory(overlay, track, target, currentC, currentZ, currentT, projection);
+        }
+    }
+
     private void applyCurrentPosition(Roi target, Roi source, ImagePlus view, int c, int currentZ, int t, boolean projection) {
         int z = source.getZPosition();
         if (z <= 0) z = source.getPosition();

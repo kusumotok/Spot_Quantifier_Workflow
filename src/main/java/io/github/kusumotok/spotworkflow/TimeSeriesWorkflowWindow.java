@@ -99,6 +99,8 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         areaTab.btnApply.addActionListener(e -> cmdAreaPreview());
         areaTab.btnMakeResultRoi.addActionListener(e -> cmdMakeResultRois());
         measurementTab.btnMeasure.addActionListener(e -> cmdMeasure());
+        areaTab.setOverlayDecorator((target, overlay, projection) ->
+            trackTab.addTrajectoryOverlay(target, overlay, projection));
         btnLoadProject.addActionListener(e -> cmdLoadProject());
         btnShowInFinder.addActionListener(e -> cmdShowInFinder());
         addWindowListener(new WindowAdapter() {

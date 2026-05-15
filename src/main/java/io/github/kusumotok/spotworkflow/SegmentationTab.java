@@ -150,6 +150,7 @@ public final class SegmentationTab extends JPanel {
     private ImageListener zWatcher;
     private boolean originalPreviewActive = true;
     private boolean zprojPreviewActive = true;
+    private OverlayDecorator overlayDecorator;
     private JPanel channelRow;
     private JPanel seedThresholdSection;
     private JPanel minVolRow;
@@ -929,6 +930,7 @@ public final class SegmentationTab extends JPanel {
             addRoisToOverlay(overlay, cachedFinalRoisByZ.get(zPlane), resultColor);
         }
 
+        decorateOverlay(currentImage, overlay, false);
         currentImage.setOverlay(overlay);
         currentImage.updateAndDraw();
     }
@@ -969,8 +971,23 @@ public final class SegmentationTab extends JPanel {
             }
         }
 
+        decorateOverlay(zp, overlay, true);
         zp.setOverlay(overlay);
         zp.updateAndDraw();
+    }
+
+    public void setOverlayDecorator(OverlayDecorator decorator) {
+        this.overlayDecorator = decorator;
+    }
+
+    private void decorateOverlay(ImagePlus target, Overlay overlay, boolean projection) {
+        if (overlayDecorator != null && target != null && overlay != null) {
+            overlayDecorator.decorate(target, overlay, projection);
+        }
+    }
+
+    public interface OverlayDecorator {
+        void decorate(ImagePlus target, Overlay overlay, boolean projection);
     }
 
     private void renderSelectedZProjOverlay() {
