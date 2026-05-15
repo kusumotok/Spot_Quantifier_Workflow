@@ -23,10 +23,15 @@ public final class TimeSeriesTrackController {
     private final TrackValidator validator = new TrackValidator();
 
     public Path buildTracks(Path projectFolder, Consumer<String> progress) throws Exception {
+        return buildTracks(projectFolder, 0.0, progress);
+    }
+
+    public Path buildTracks(Path projectFolder, double maxLinkDistancePx, Consumer<String> progress) throws Exception {
         Path untrackedRoot = projectFolder.resolve("seed_rois_untracked");
         if (!Files.isDirectory(untrackedRoot)) {
             throw new IOException("Missing seed_rois_untracked. Run Seed first.");
         }
+        double maxDistance = Math.max(0.0, maxLinkDistancePx);
         List<Path> timeRoots = listTimeRoots(untrackedRoot);
         if (timeRoots.isEmpty()) throw new IOException("No timepoint folders in seed_rois_untracked.");
 
@@ -42,7 +47,7 @@ public final class TimeSeriesTrackController {
             List<ObjectInfo> currentObjects = readObjects(timeRoot, t);
             Set<Integer> usedPrevious = new HashSet<>();
             for (ObjectInfo current : currentObjects) {
-                ObjectInfo best = mutualNearestWithinLimit(current, currentObjects, previousObjects, usedPrevious);
+                ObjectInfo best = mutualNearestWithinLimit(current, currentObjects, previousObjects, usedPrevious, maxDistance);
                 TrackTree.TrackNode track;
                 if (best != null) {
                     track = best.track;
@@ -124,20 +129,21 @@ public final class TimeSeriesTrackController {
     }
 
     private static ObjectInfo mutualNearestWithinLimit(ObjectInfo current, List<ObjectInfo> currentObjects,
-                                                       List<ObjectInfo> previous, Set<Integer> usedPrevious) {
-        ObjectInfo best = nearestPreviousWithinLimit(current, previous, usedPrevious);
+                                                       List<ObjectInfo> previous, Set<Integer> usedPrevious,
+                                                       double maxLinkDistancePx) {
+        ObjectInfo best = nearestPreviousWithinLimit(current, previous, usedPrevious, maxLinkDistancePx);
         if (best == null) return null;
-        ObjectInfo reverse = nearestCurrentWithinLimit(best, currentObjects);
+        ObjectInfo reverse = nearestCurrentWithinLimit(best, currentObjects, maxLinkDistancePx);
         return reverse == current ? best : null;
     }
 
     private static ObjectInfo nearestPreviousWithinLimit(ObjectInfo current, List<ObjectInfo> previous,
-                                                        Set<Integer> usedPrevious) {
+                                                        Set<Integer> usedPrevious, double maxLinkDistancePx) {
         ObjectInfo best = null;
         double bestD2 = Double.POSITIVE_INFINITY;
         for (ObjectInfo candidate : previous) {
             if (usedPrevious.contains(candidate.index)) continue;
-            if (!withinAutoLinkLimit(current, candidate)) continue;
+            if (!withinAutoLinkLimit(current, candidate, maxLinkDistancePx)) continue;
             double d2 = current.centroid.distance2(candidate.centroid);
             if (d2 < bestD2) {
                 bestD2 = d2;
@@ -147,11 +153,12 @@ public final class TimeSeriesTrackController {
         return best;
     }
 
-    private static ObjectInfo nearestCurrentWithinLimit(ObjectInfo previous, List<ObjectInfo> currentObjects) {
+    private static ObjectInfo nearestCurrentWithinLimit(ObjectInfo previous, List<ObjectInfo> currentObjects,
+                                                       double maxLinkDistancePx) {
         ObjectInfo best = null;
         double bestD2 = Double.POSITIVE_INFINITY;
         for (ObjectInfo candidate : currentObjects) {
-            if (!withinAutoLinkLimit(candidate, previous)) continue;
+            if (!withinAutoLinkLimit(candidate, previous, maxLinkDistancePx)) continue;
             double d2 = candidate.centroid.distance2(previous.centroid);
             if (d2 < bestD2) {
                 bestD2 = d2;
@@ -161,9 +168,10 @@ public final class TimeSeriesTrackController {
         return best;
     }
 
-    private static boolean withinAutoLinkLimit(ObjectInfo current, ObjectInfo previous) {
-        double limit = Math.max(MIN_AUTO_LINK_DISTANCE,
-            AUTO_LINK_RADIUS_FACTOR * Math.max(current.radius, previous.radius));
+    private static boolean withinAutoLinkLimit(ObjectInfo current, ObjectInfo previous, double maxLinkDistancePx) {
+        double limit = maxLinkDistancePx > 0.0
+            ? maxLinkDistancePx
+            : Math.max(MIN_AUTO_LINK_DISTANCE, AUTO_LINK_RADIUS_FACTOR * Math.max(current.radius, previous.radius));
         return current.centroid.distance2(previous.centroid) <= limit * limit;
     }
 

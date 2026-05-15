@@ -45,6 +45,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private final RoiExplorerPanel seedRoiPanel = new RoiExplorerPanel();
     private final TimeSeriesTrackTab trackTab = new TimeSeriesTrackTab();
     private final RoiExplorerPanel resultMeasurePanel = new RoiExplorerPanel();
+    private final JSpinner autoTrackMaxDistanceSpinner = new JSpinner(new SpinnerNumberModel(0.0, 0.0, 10000.0, 5.0));
     private final MeasurementController measureCtrl = new MeasurementController(resultMeasurePanel);
     private final TimeSeriesSegmentationController segmentationCtrl = new TimeSeriesSegmentationController();
     private final TimeSeriesTrackController trackCtrl = new TimeSeriesTrackController();
@@ -126,8 +127,12 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         JButton btnLinker = new JButton("Open Linker...");
         btnAutoTrack.addActionListener(e -> cmdAutoTrackSeeds());
         btnLinker.addActionListener(e -> cmdOpenTrackLinker());
+        autoTrackMaxDistanceSpinner.setToolTipText("0 = auto: max(25 px, 6 x object radius). Positive values are used as the maximum allowed centroid movement.");
+        autoTrackMaxDistanceSpinner.setEditor(new JSpinner.NumberEditor(autoTrackMaxDistanceSpinner, "0.0"));
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
         actions.add(btnAutoTrack);
+        actions.add(new JLabel("Max move px:"));
+        actions.add(autoTrackMaxDistanceSpinner);
         actions.add(btnLinker);
         p.add(actions, BorderLayout.NORTH);
         p.add(trackTab, BorderLayout.CENTER);
@@ -436,9 +441,10 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             setStatus("Run Seed first.");
             return;
         }
+        final double maxMovePx = ((Number) autoTrackMaxDistanceSpinner.getValue()).doubleValue();
         new SwingWorker<Path, String>() {
             @Override protected Path doInBackground() throws Exception {
-                return trackCtrl.buildTracks(projectFolder, this::publish);
+                return trackCtrl.buildTracks(projectFolder, maxMovePx, this::publish);
             }
             @Override protected void process(List<String> chunks) {
                 if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
@@ -609,13 +615,30 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             setStatus("Could not open seed_rois_untracked.");
             return;
         }
+        Path seedObjectPath = resolveUntrackedSeedObjectPath(root, objectPath);
         seedRoiPanel.setBindImage(boundImage);
         seedRoiPanel.setContainerOrMode(true);
         seedRoiPanel.setProjectionMode(true, false, false);
         seedRoiPanel.openFolder(root);
-        restoreSeedRoiSelection(objectPath);
+        restoreSeedRoiSelection(seedObjectPath);
         tabs.setSelectedIndex(1);
-        setStatus("Opened Seed Edit: " + objectPath.getFileName());
+        setStatus("Opened Seed Edit: " + seedObjectPath.getFileName());
+    }
+
+    private Path resolveUntrackedSeedObjectPath(Path seedRoot, Path objectPath) {
+        if (objectPath != null && objectPath.startsWith(seedRoot) && Files.exists(objectPath)) return objectPath;
+        String name = objectPath != null && objectPath.getFileName() != null
+            ? objectPath.getFileName().toString() : "";
+        int marker = name.indexOf("__obj__");
+        if (marker < 0) return objectPath;
+        String sourceId = name.substring(marker + "__obj__".length());
+        int sep = sourceId.indexOf('_');
+        if (sep <= 0 || sep >= sourceId.length() - 1) return objectPath;
+        String time = sourceId.substring(0, sep);
+        String object = sourceId.substring(sep + 1);
+        if (!object.matches("(?i)obj[-_].*")) object = "obj-" + object;
+        Path candidate = seedRoot.resolve(time).resolve(object);
+        return Files.exists(candidate) ? candidate : objectPath;
     }
 
     private void restoreSeedRoiSelection(Path objectPath) {
