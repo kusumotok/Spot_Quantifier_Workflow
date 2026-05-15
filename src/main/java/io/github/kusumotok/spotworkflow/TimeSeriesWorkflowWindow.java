@@ -534,7 +534,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         resultMeasurePanel.setContainerOrMode(true);
         resultMeasurePanel.openFolder(resultRoot);
         Path csvPath = timeSeriesMeasurementCsv(projectFolder, resultRoot);
-        setStatus("Measuring XYZT track comparison: " + resultRoot.getFileName());
+        setStatus("Measuring " + measurementTab.selectedPresetLabel() + ": " + resultRoot.getFileName());
         final MeasurementRequest request = measurementTab.buildRequest(csvPath);
         new SwingWorker<MeasurementResult, Void>() {
             @Override protected MeasurementResult doInBackground() {
