@@ -33,6 +33,13 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private final JList<TrackEditor.ObjRef> rightList = new JList<TrackEditor.ObjRef>(rightModel);
     private final LinkerImagePane leftPane = new LinkerImagePane(true);
     private final LinkerImagePane rightPane = new LinkerImagePane(false);
+    private final JCheckBox zProjMode = new JCheckBox("Z-proj", true);
+    private final JCheckBox zSync = new JCheckBox("Z sync", true);
+    private final JCheckBox cSync = new JCheckBox("C sync", true);
+    private final JSpinner leftZSpinner;
+    private final JSpinner rightZSpinner;
+    private final JSpinner leftCSpinner;
+    private final JSpinner rightCSpinner;
     private final JLabel status = new JLabel(" ");
     private TrackTree tree;
     private boolean renderingOverlay;
@@ -40,8 +47,9 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         new java.util.IdentityHashMap<TrackTree.ObjNode, java.util.List<Roi>>();
     private final java.util.Map<TrackTree.ObjNode, OvalRoi> centroidOverlayCache =
         new java.util.IdentityHashMap<TrackTree.ObjNode, OvalRoi>();
-    private final java.util.Map<Integer, BufferedImage> projectionCache =
-        new java.util.HashMap<Integer, BufferedImage>();
+    private final java.util.Map<String, BufferedImage> frameCache =
+        new java.util.HashMap<String, BufferedImage>();
+    private final java.util.List<Trajectory> trajectories = new java.util.ArrayList<Trajectory>();
 
     TimeSeriesTrackLinkerDialog(Window owner, ImagePlus image, Path tracksRoot, Runnable onSaved) throws IOException {
         super(owner, "Track Linker", ModalityType.MODELESS);
@@ -50,8 +58,15 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         this.onSaved = onSaved;
         this.tree = io.read(tracksRoot);
         rebuildOverlayCache();
+        rebuildTrajectoryCache();
         int maxT = image != null ? Math.max(1, image.getNFrames() - 1) : 1;
+        int maxZ = image != null ? Math.max(1, image.getNSlices()) : 1;
+        int maxC = image != null ? Math.max(1, image.getNChannels()) : 1;
         timeSpinner = new JSpinner(new SpinnerNumberModel(1, 1, Math.max(1, maxT), 1));
+        leftZSpinner = new JSpinner(new SpinnerNumberModel(1, 1, maxZ, 1));
+        rightZSpinner = new JSpinner(new SpinnerNumberModel(1, 1, maxZ, 1));
+        leftCSpinner = new JSpinner(new SpinnerNumberModel(image != null ? Math.max(1, image.getC()) : 1, 1, maxC, 1));
+        rightCSpinner = new JSpinner(new SpinnerNumberModel(image != null ? Math.max(1, image.getC()) : 1, 1, maxC, 1));
         buildUi();
         installListeners();
         reloadLists();
@@ -67,6 +82,15 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         top.add(new JLabel("T:"));
         top.add(timeSpinner);
         top.add(new JLabel("left=T, right=T+1"));
+        top.add(zProjMode);
+        top.add(zSync);
+        top.add(cSync);
+        top.add(new JLabel("C L/R:"));
+        top.add(leftCSpinner);
+        top.add(rightCSpinner);
+        top.add(new JLabel("Z L/R:"));
+        top.add(leftZSpinner);
+        top.add(rightZSpinner);
         add(top, BorderLayout.NORTH);
 
         JPanel imageViews = new JPanel(new GridLayout(1, 2, 6, 0));
@@ -118,8 +142,22 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
     private void installListeners() {
         timeSpinner.addChangeListener(e -> reloadLists());
+        zProjMode.addActionListener(e -> updateModeControlsAndImages());
+        zSync.addActionListener(e -> syncRightZFromLeft());
+        cSync.addActionListener(e -> syncRightCFromLeft());
+        leftZSpinner.addChangeListener(e -> {
+            if (zSync.isSelected()) syncRightZFromLeft();
+            updateImagePanes();
+        });
+        rightZSpinner.addChangeListener(e -> updateImagePanes());
+        leftCSpinner.addChangeListener(e -> {
+            if (cSync.isSelected()) syncRightCFromLeft();
+            updateImagePanes();
+        });
+        rightCSpinner.addChangeListener(e -> updateImagePanes());
         leftList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderOverlay(); });
         rightList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderOverlay(); });
+        updateModeControlsAndImages();
     }
 
     private void reloadLists() {
@@ -151,6 +189,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         }
         editor.linkAfter(left, right);
         editor.pruneEmptyTracks(tree);
+        rebuildTrajectoryCache();
         reloadLists();
         status.setText("Linked " + right.obj.getSourceObjId() + " after " + left.obj.getSourceObjId() + ". Save Tracking to persist.");
     }
@@ -163,6 +202,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         }
         editor.unlinkToNewTrack(tree, right);
         editor.pruneEmptyTracks(tree);
+        rebuildTrajectoryCache();
         reloadLists();
         status.setText("Unlinked " + right.obj.getSourceObjId() + " to a new track. Save Tracking to persist.");
     }
@@ -177,6 +217,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             io.write(tracksRoot, tree);
             tree = io.read(tracksRoot);
             rebuildOverlayCache();
+            rebuildTrajectoryCache();
             reloadLists();
             if (onSaved != null) onSaved.run();
             status.setText("Saved Tracking: " + tracksRoot);
@@ -193,8 +234,14 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
     private void updateImagePanes() {
         int t = currentT();
-        leftPane.setFrame(t, projectionForTime(t), refsFromModel(leftModel));
-        rightPane.setFrame(t + 1, projectionForTime(t + 1), refsFromModel(rightModel));
+        int leftC = intValue(leftCSpinner);
+        int rightC = intValue(rightCSpinner);
+        int leftZ = intValue(leftZSpinner);
+        int rightZ = intValue(rightZSpinner);
+        boolean project = zProjMode.isSelected();
+        leftPane.setFrame(t, frameFor(leftC, leftZ, t, project), refsFromModel(leftModel), project ? 0 : leftZ);
+        rightPane.setFrame(t + 1, frameFor(rightC, rightZ, t + 1, project), refsFromModel(rightModel), project ? 0 : rightZ);
+        renderOverlay();
     }
 
     private static java.util.List<TrackEditor.ObjRef> refsFromModel(DefaultListModel<TrackEditor.ObjRef> model) {
@@ -223,11 +270,66 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         }
     }
 
-    private BufferedImage projectionForTime(int t) {
-        BufferedImage cached = projectionCache.get(t);
+    private void rebuildTrajectoryCache() {
+        trajectories.clear();
+        if (tree == null) return;
+        for (TrackTree.TrackNode track : tree.getTracks()) collectTrajectory(track);
+    }
+
+    private void collectTrajectory(TrackTree.TrackNode track) {
+        java.util.List<TrajectoryPoint> points = new java.util.ArrayList<TrajectoryPoint>();
+        collectTrajectoryPoints(track, points);
+        java.util.Collections.sort(points, new java.util.Comparator<TrajectoryPoint>() {
+            @Override public int compare(TrajectoryPoint a, TrajectoryPoint b) {
+                return Integer.compare(a.t, b.t);
+            }
+        });
+        if (points.size() >= 2) trajectories.add(new Trajectory(points));
+        for (TrackTree.Entry child : track.getChildren()) {
+            if (child instanceof TrackTree.TrackNode) collectTrajectory((TrackTree.TrackNode) child);
+        }
+    }
+
+    private void collectTrajectoryPoints(TrackTree.TrackNode track, java.util.List<TrajectoryPoint> points) {
+        for (TrackTree.Entry child : track.getChildren()) {
+            if (child instanceof TrackTree.ObjNode) {
+                TrackTree.ObjNode obj = (TrackTree.ObjNode) child;
+                points.add(new TrajectoryPoint(obj.firstT(), obj.centerX(), obj.centerY()));
+            } else if (child instanceof TrackTree.TrackNode) {
+                collectTrajectoryPoints((TrackTree.TrackNode) child, points);
+            }
+        }
+    }
+
+    private void updateModeControlsAndImages() {
+        boolean project = zProjMode.isSelected();
+        leftZSpinner.setEnabled(!project);
+        rightZSpinner.setEnabled(!project && !zSync.isSelected());
+        zSync.setEnabled(!project);
+        rightCSpinner.setEnabled(!cSync.isSelected());
+        if (!project && zSync.isSelected()) syncRightZFromLeft();
+        if (cSync.isSelected()) syncRightCFromLeft();
+        updateImagePanes();
+    }
+
+    private void syncRightZFromLeft() {
+        if (!zSync.isSelected()) return;
+        rightZSpinner.setValue(leftZSpinner.getValue());
+        rightZSpinner.setEnabled(!zProjMode.isSelected() && !zSync.isSelected());
+    }
+
+    private void syncRightCFromLeft() {
+        if (!cSync.isSelected()) return;
+        rightCSpinner.setValue(leftCSpinner.getValue());
+        rightCSpinner.setEnabled(false);
+    }
+
+    private BufferedImage frameFor(int c, int z, int t, boolean project) {
+        String key = (project ? "p" : "z") + ":c" + c + ":z" + z + ":t" + t;
+        BufferedImage cached = frameCache.get(key);
         if (cached != null) return cached;
-        BufferedImage created = createMaxProjection(image, t);
-        projectionCache.put(t, created);
+        BufferedImage created = project ? createMaxProjection(image, c, t) : createSliceImage(image, c, z, t);
+        frameCache.put(key, created);
         return created;
     }
 
@@ -235,12 +337,12 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         super.dispose();
     }
 
-    private static BufferedImage createMaxProjection(ImagePlus image, int t) {
+    private static BufferedImage createMaxProjection(ImagePlus image, int c, int t) {
         int w = image != null ? image.getWidth() : 1;
         int h = image != null ? image.getHeight() : 1;
         BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
         if (image == null) return out;
-        int c = Math.max(1, Math.min(image.getC(), Math.max(1, image.getNChannels())));
+        int safeC = Math.max(1, Math.min(c, Math.max(1, image.getNChannels())));
         int safeT = Math.max(1, Math.min(t, Math.max(1, image.getNFrames())));
         int slices = Math.max(1, image.getNSlices());
         float[] max = new float[w * h];
@@ -248,7 +350,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         float min = Float.MAX_VALUE;
         float maxVal = -Float.MAX_VALUE;
         for (int z = 1; z <= slices; z++) {
-            ImageProcessor ip = image.getStack().getProcessor(image.getStackIndex(c, z, safeT));
+            ImageProcessor ip = image.getStack().getProcessor(image.getStackIndex(safeC, z, safeT));
             for (int y = 0; y < h; y++) {
                 int offset = y * w;
                 for (int x = 0; x < w; x++) {
@@ -276,9 +378,38 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         return out;
     }
 
+    private static BufferedImage createSliceImage(ImagePlus image, int c, int z, int t) {
+        int w = image != null ? image.getWidth() : 1;
+        int h = image != null ? image.getHeight() : 1;
+        BufferedImage out = new BufferedImage(w, h, BufferedImage.TYPE_BYTE_GRAY);
+        if (image == null) return out;
+        int safeC = Math.max(1, Math.min(c, Math.max(1, image.getNChannels())));
+        int safeZ = Math.max(1, Math.min(z, Math.max(1, image.getNSlices())));
+        int safeT = Math.max(1, Math.min(t, Math.max(1, image.getNFrames())));
+        ImageProcessor ip = image.getStack().getProcessor(image.getStackIndex(safeC, safeZ, safeT));
+        double min = ip.getMin();
+        double max = ip.getMax();
+        double scale = max > min ? 255.0 / (max - min) : 1.0;
+        java.awt.image.WritableRaster raster = out.getRaster();
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int gray = (int) Math.round((ip.getf(x, y) - min) * scale);
+                if (gray < 0) gray = 0;
+                if (gray > 255) gray = 255;
+                raster.setSample(x, y, 0, gray);
+            }
+        }
+        return out;
+    }
+
+    private static int intValue(JSpinner spinner) {
+        return ((Number) spinner.getValue()).intValue();
+    }
+
     private final class LinkerImagePane extends JPanel {
         private final boolean left;
         private int time;
+        private int zFilter;
         private BufferedImage frame;
         private java.util.List<TrackEditor.ObjRef> refs = java.util.Collections.emptyList();
 
@@ -293,10 +424,11 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             });
         }
 
-        void setFrame(int time, BufferedImage frame, java.util.List<TrackEditor.ObjRef> refs) {
+        void setFrame(int time, BufferedImage frame, java.util.List<TrackEditor.ObjRef> refs, int zFilter) {
             this.time = time;
             this.frame = frame;
             this.refs = refs != null ? refs : java.util.Collections.<TrackEditor.ObjRef>emptyList();
+            this.zFilter = zFilter;
             repaint();
         }
 
@@ -317,6 +449,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         }
 
         private void paintObjects(Graphics2D g2, Rectangle draw) {
+            paintTrajectories(g2, draw);
             TrackEditor.ObjRef selected = left ? leftList.getSelectedValue() : rightList.getSelectedValue();
             for (TrackEditor.ObjRef ref : refs) {
                 Color color = ref == selected ? (left ? Color.YELLOW : Color.CYAN) : new Color(210, 210, 210, 150);
@@ -324,10 +457,27 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 g2.setStroke(new BasicStroke(ref == selected ? 2f : 1f));
                 java.util.List<Roi> rois = roiOverlayCache.get(ref.obj);
                 if (rois != null) {
-                    for (Roi roi : rois) drawRoi(g2, draw, roi);
+                    for (Roi roi : rois) {
+                        if (zFilter > 0 && !roiMatchesZ(roi, zFilter)) continue;
+                        drawRoi(g2, draw, roi);
+                    }
                 }
                 Point p = toView(draw, ref.obj.centerX(), ref.obj.centerY());
                 g2.fillOval(p.x - 3, p.y - 3, 6, 6);
+            }
+        }
+
+        private void paintTrajectories(Graphics2D g2, Rectangle draw) {
+            g2.setColor(new Color(0, 180, 255, 130));
+            g2.setStroke(new BasicStroke(1.4f));
+            for (Trajectory trajectory : trajectories) {
+                for (int i = 1; i < trajectory.points.size(); i++) {
+                    TrajectoryPoint a = trajectory.points.get(i - 1);
+                    TrajectoryPoint b = trajectory.points.get(i);
+                    Point p1 = toView(draw, a.x, a.y);
+                    Point p2 = toView(draw, b.x, b.y);
+                    g2.drawLine(p1.x, p1.y, p2.x, p2.y);
+                }
             }
         }
 
@@ -371,6 +521,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             double bestArea = Double.POSITIVE_INFINITY;
             for (TrackEditor.ObjRef ref : refs) {
                 for (Roi roi : ref.obj.getRois()) {
+                    if (zFilter > 0 && !roiMatchesZ(roi, zFilter)) continue;
                     if (!roi.contains((int) Math.round(ix), (int) Math.round(iy))) continue;
                     Rectangle b = roi.getBounds();
                     double area = b.getWidth() * b.getHeight();
@@ -401,6 +552,30 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         private Point toView(Rectangle draw, double x, double y) {
             double s = scale(draw);
             return new Point(draw.x + (int) Math.round(x * s), draw.y + (int) Math.round(y * s));
+        }
+
+        private boolean roiMatchesZ(Roi roi, int z) {
+            int rz = roi.getZPosition();
+            if (rz <= 0) rz = roi.getPosition();
+            return rz <= 0 || rz == z;
+        }
+    }
+
+    private static final class Trajectory {
+        final java.util.List<TrajectoryPoint> points;
+        Trajectory(java.util.List<TrajectoryPoint> points) {
+            this.points = points;
+        }
+    }
+
+    private static final class TrajectoryPoint {
+        final int t;
+        final double x;
+        final double y;
+        TrajectoryPoint(int t, double x, double y) {
+            this.t = t;
+            this.x = x;
+            this.y = y;
         }
     }
 }
