@@ -202,6 +202,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         // Track tab clears ImageJ overlays when deactivated; do that before any tab-specific overlay is drawn.
         trackTab.setActive(current == 2);
         if (current == 1) {
+            resultMeasurePanel.setOverlayEnabled(false);
             RoiExplorerPreviewSupport.activateSeedEditPreview(seedRoiPanel, seedTab, areaTab,
                 boundImage, zprojImage);
         } else if (previousTabIndex == 1) {
@@ -210,13 +211,16 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             seedRoiPanel.setOverlayEnabled(false);
         }
         if (current == 0) {
+            resultMeasurePanel.setOverlayEnabled(false);
             areaTab.setPreviewActive(false, false);
             seedTab.setPreviewActive(true, true);
         } else if (current == 3) {
+            resultMeasurePanel.setOverlayEnabled(false);
             areaTab.setPreviewActive(false, false);
             seedTab.clearOverlayOnly();
             areaTab.setPreviewActive(true, true);
         } else if (current != 1) {
+            resultMeasurePanel.setOverlayEnabled(current == 4);
             seedTab.setPreviewActive(false, false);
             areaTab.setPreviewActive(false, false);
         }
