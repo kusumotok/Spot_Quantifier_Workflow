@@ -306,6 +306,12 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         editor.pruneEmptyTracks(tree);
         rebuildTrajectoryCache();
         reloadPair();
+        selectObject(leftList, leftModel, left.obj);
+        selectObject(rightList, rightModel, right.obj);
+        lastSelectedSide = null;
+        lastClickedRef = null;
+        updateSelectionState();
+        repaintPanes();
         status.setText("Linked " + objLabel(left) + " -> " + objLabel(right) + ". Save Tracking to persist.");
     }
 
