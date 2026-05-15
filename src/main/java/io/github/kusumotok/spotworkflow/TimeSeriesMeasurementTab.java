@@ -5,7 +5,6 @@ import io.github.kusumotok.roiexplorer.service.measure.MeasurementColumn;
 import io.github.kusumotok.roiexplorer.service.measure.MeasurementTargetMode;
 import io.github.kusumotok.roiexplorer.service.measure.RoiCollectionMode;
 import io.github.kusumotok.roiexplorer.service.measure.XyzObjectProfile;
-import io.github.kusumotok.roiexplorer.service.measure.XyztTrackComparisonProfile;
 
 import javax.swing.*;
 import javax.swing.border.TitledBorder;
@@ -22,12 +21,11 @@ public final class TimeSeriesMeasurementTab extends JPanel {
     final JButton btnMeasure = new JButton("Measure");
 
     private final JComboBox<ResultFolderItem> resultFolderCombo = new JComboBox<ResultFolderItem>();
-    private final JComboBox<MeasurementPreset> presetCombo = new JComboBox<MeasurementPreset>(MeasurementPreset.values());
     private final JCheckBox saveCsvCheck = new JCheckBox("Save CSV to result folder", true);
     private final JCheckBox showTableCheck = new JCheckBox("Show ResultsTable", false);
     private final Map<MeasurementColumn, JCheckBox> columnChecks = new LinkedHashMap<MeasurementColumn, JCheckBox>();
     private final TitledBorder columnsBorder =
-        BorderFactory.createTitledBorder(BorderFactory.createEtchedBorder(), "Output columns (XYZT Track Comparison)");
+        BorderFactory.createTitledBorder(BorderFactory.createEtchedBorder(), "Output columns (XYZ Object, leaf folders)");
 
     public TimeSeriesMeasurementTab() {
         setLayout(new BoxLayout(this, BoxLayout.Y_AXIS));
@@ -35,14 +33,10 @@ public final class TimeSeriesMeasurementTab extends JPanel {
 
         add(buildResultFolderPanel());
         add(Box.createVerticalStrut(8));
-        add(buildPresetPanel());
-        add(Box.createVerticalStrut(8));
         add(buildOutputPanel());
         add(Box.createVerticalStrut(8));
         add(buildColumnsPanel());
         add(Box.createVerticalStrut(8));
-        presetCombo.addActionListener(e -> updatePresetUi());
-        updatePresetUi();
     }
 
     private JPanel buildResultFolderPanel() {
@@ -52,16 +46,6 @@ public final class TimeSeriesMeasurementTab extends JPanel {
         p.add(new JLabel("Area threshold:"), BorderLayout.WEST);
         resultFolderCombo.setPrototypeDisplayValue(new ResultFolderItem(Paths.get("result_rois_area-th0000")));
         p.add(resultFolderCombo, BorderLayout.CENTER);
-        p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
-        return p;
-    }
-
-    private JPanel buildPresetPanel() {
-        JPanel p = new JPanel(new BorderLayout(6, 0));
-        p.setBorder(BorderFactory.createTitledBorder(BorderFactory.createEtchedBorder(), "Measurement preset"));
-        p.setAlignmentX(LEFT_ALIGNMENT);
-        p.add(new JLabel("Preset:"), BorderLayout.WEST);
-        p.add(presetCombo, BorderLayout.CENTER);
         p.setMaximumSize(new Dimension(Integer.MAX_VALUE, p.getPreferredSize().height));
         return p;
     }
@@ -155,23 +139,13 @@ public final class TimeSeriesMeasurementTab extends JPanel {
 
     public MeasurementRequest buildRequest(Path csvPath) {
         Set<MeasurementColumn> enabled = getSelectedColumns();
-        MeasurementPreset preset = (MeasurementPreset) presetCombo.getSelectedItem();
         MeasurementRequest request = MeasurementRequest
-            .useProfile(preset == MeasurementPreset.XYZ_OBJECT
-                ? new XyzObjectProfile(enabled)
-                : new XyztTrackComparisonProfile(enabled))
+            .useProfile(new XyzObjectProfile(enabled))
             .withEnabledColumns(enabled)
             .withShowResultsTable(showTableCheck.isSelected())
-            .withMeasureAll(true);
-        if (preset == MeasurementPreset.XYZ_OBJECT) {
-            request = request
-                .withTargetMode(MeasurementTargetMode.ROI_CONTAINING_FOLDERS)
-                .withCollectionMode(RoiCollectionMode.DIRECT);
-        } else {
-            request = request
-                .withTargetMode(MeasurementTargetMode.ROOT_CHILDREN_ONLY)
-                .withCollectionMode(RoiCollectionMode.FLATTEN);
-        }
+            .withMeasureAll(true)
+            .withTargetMode(MeasurementTargetMode.LEAF_FOLDERS)
+            .withCollectionMode(RoiCollectionMode.DIRECT);
         if (saveCsvCheck.isSelected() && csvPath != null) request = request.withCsvOutput(csvPath);
         return request;
     }
@@ -185,32 +159,7 @@ public final class TimeSeriesMeasurementTab extends JPanel {
     }
 
     public String selectedPresetLabel() {
-        MeasurementPreset preset = (MeasurementPreset) presetCombo.getSelectedItem();
-        return preset != null ? preset.label : MeasurementPreset.XYZT_TRACK_COMPARISON.label;
-    }
-
-    private void updatePresetUi() {
-        MeasurementPreset preset = (MeasurementPreset) presetCombo.getSelectedItem();
-        if (preset == null) preset = MeasurementPreset.XYZT_TRACK_COMPARISON;
-        columnsBorder.setTitle("Output columns (" + preset.label + ")");
-        btnMeasure.setText(preset == MeasurementPreset.XYZ_OBJECT ? "Measure" : "Measure XYZT comparison");
-        revalidate();
-        repaint();
-    }
-
-    private enum MeasurementPreset {
-        XYZ_OBJECT("XYZ Object"),
-        XYZT_TRACK_COMPARISON("XYZT Track Comparison");
-
-        final String label;
-
-        MeasurementPreset(String label) {
-            this.label = label;
-        }
-
-        @Override public String toString() {
-            return label;
-        }
+        return "XYZ Object";
     }
 
     private static final class ResultFolderItem {

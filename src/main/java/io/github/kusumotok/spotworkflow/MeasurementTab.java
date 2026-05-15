@@ -2,6 +2,8 @@ package io.github.kusumotok.spotworkflow;
 
 import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementRequest;
 import io.github.kusumotok.roiexplorer.service.measure.MeasurementColumn;
+import io.github.kusumotok.roiexplorer.service.measure.MeasurementTargetMode;
+import io.github.kusumotok.roiexplorer.service.measure.RoiCollectionMode;
 import io.github.kusumotok.roiexplorer.service.measure.XyzObjectProfile;
 
 import javax.swing.*;
@@ -189,7 +191,9 @@ public final class MeasurementTab extends JPanel {
             .useProfile(new XyzObjectProfile(enabled))
             .withEnabledColumns(enabled)
             .withShowResultsTable(showTableCheck.isSelected())
-            .withMeasureAll(true);
+            .withMeasureAll(true)
+            .withTargetMode(MeasurementTargetMode.LEAF_FOLDERS)
+            .withCollectionMode(RoiCollectionMode.DIRECT);
         if (saveCsvCheck.isSelected() && csvOutputPath != null) {
             req = req.withCsvOutput(csvOutputPath);
         }
