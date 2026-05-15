@@ -35,6 +35,7 @@ final class TimeSeriesTrackTab extends JPanel {
     private final TrackValidator validator = new TrackValidator();
 
     private ImagePlus image;
+    private ImagePlus subImage;
     private Path tracksRoot;
     private List<Track> tracks = Collections.emptyList();
     private boolean active;
@@ -43,6 +44,11 @@ final class TimeSeriesTrackTab extends JPanel {
     private int lastC = -1;
     private int lastZ = -1;
     private int lastT = -1;
+    private int lastSlice = -1;
+    private int lastSubC = -1;
+    private int lastSubZ = -1;
+    private int lastSubT = -1;
+    private int lastSubSlice = -1;
 
     TimeSeriesTrackTab() {
         super(new BorderLayout(0, 4));
@@ -73,6 +79,14 @@ final class TimeSeriesTrackTab extends JPanel {
         clearOverlay();
         this.image = image;
         installListener();
+        renderIfActive();
+    }
+
+    void setSubImage(ImagePlus image) {
+        if (this.subImage == image) return;
+        clearSubOverlay();
+        this.subImage = image;
+        resetRenderedPosition();
         renderIfActive();
     }
 
@@ -123,38 +137,45 @@ final class TimeSeriesTrackTab extends JPanel {
     }
 
     private void renderOverlay() {
-        if (!active || image == null || renderingOverlay) return;
+        if (!active || renderingOverlay) return;
         renderingOverlay = true;
-        Overlay overlay = new Overlay();
         try {
-            int currentC = image.isHyperStack() ? Math.max(1, image.getC()) : 1;
-            int currentT = image.isHyperStack() ? Math.max(1, image.getT()) : 1;
-            for (Track track : tracks) {
-                addTrajectory(overlay, track, currentC, currentT);
-                for (TrackSpot spot : track.spots) {
-                    if (spot.t != currentT) continue;
-                    for (Roi roi : spot.rois) {
-                        Roi clone = (Roi) roi.clone();
-                        clone.setStrokeColor(Color.YELLOW);
-                        applyCurrentPosition(clone, roi, currentC, currentT);
-                        overlay.add(clone);
-                    }
-                    OvalRoi dot = new OvalRoi(spot.x - 3.0, spot.y - 3.0, 6.0, 6.0);
-                    dot.setStrokeColor(Color.CYAN);
-                    dot.setFillColor(new Color(0, 255, 255, 90));
-                    dot.setPosition(currentC, currentZForDot(), currentT);
-                    overlay.add(dot);
-                }
-            }
-            image.setOverlay(overlay.size() > 0 ? overlay : null);
-            rememberRenderedPosition();
-            image.updateAndDraw();
+            renderOverlayFor(image, false);
+            renderOverlayFor(subImage, true);
         } finally {
             renderingOverlay = false;
         }
     }
 
-    private void addTrajectory(Overlay overlay, Track track, int c, int t) {
+    private void renderOverlayFor(ImagePlus target, boolean projection) {
+        if (target == null) return;
+        Overlay overlay = new Overlay();
+        int currentC = currentC(target);
+        int currentT = currentT(target);
+        int currentZ = projection ? 1 : currentZFor(target);
+        for (Track track : tracks) {
+            addTrajectory(overlay, track, target, currentC, currentZ, currentT, projection);
+            for (TrackSpot spot : track.spots) {
+                if (spot.t != currentT) continue;
+                for (Roi roi : spot.rois) {
+                    Roi clone = (Roi) roi.clone();
+                    clone.setStrokeColor(Color.YELLOW);
+                    applyCurrentPosition(clone, roi, target, currentC, currentZ, currentT, projection);
+                    overlay.add(clone);
+                }
+                OvalRoi dot = new OvalRoi(spot.x - 3.0, spot.y - 3.0, 6.0, 6.0);
+                dot.setStrokeColor(Color.CYAN);
+                dot.setFillColor(new Color(0, 255, 255, 90));
+                applyOverlayPosition(dot, target, currentC, currentZ, currentT, projection);
+                overlay.add(dot);
+            }
+        }
+        target.setOverlay(overlay.size() > 0 ? overlay : null);
+        rememberRenderedPosition(target, projection);
+        target.updateAndDraw();
+    }
+
+    private void addTrajectory(Overlay overlay, Track track, ImagePlus view, int c, int z, int t, boolean projection) {
         List<TrackSpot> spots = track.spots;
         for (int i = 1; i < spots.size(); i++) {
             TrackSpot a = spots.get(i - 1);
@@ -162,26 +183,53 @@ final class TimeSeriesTrackTab extends JPanel {
             Line line = new Line(a.x, a.y, b.x, b.y);
             line.setStrokeColor(new Color(0, 180, 255, 160));
             line.setStrokeWidth(1.5);
-            line.setPosition(c, currentZForDot(), t);
+            applyOverlayPosition(line, view, c, z, t, projection);
             overlay.add(line);
         }
     }
 
-    private void applyCurrentPosition(Roi target, Roi source, int c, int t) {
+    private void applyCurrentPosition(Roi target, Roi source, ImagePlus view, int c, int currentZ, int t, boolean projection) {
         int z = source.getZPosition();
         if (z <= 0) z = source.getPosition();
-        if (z <= 0) z = currentZForDot();
-        target.setPosition(c, z, t);
+        if (projection) z = 1;
+        else if (z <= 0) z = currentZ;
+        applyOverlayPosition(target, view, c, z, t, projection);
     }
 
-    private int currentZForDot() {
-        return image != null && image.getNSlices() > 1 ? Math.max(1, image.getZ()) : 1;
+    private void applyOverlayPosition(Roi roi, ImagePlus view, int c, int z, int t, boolean projection) {
+        if (view != null && view.isHyperStack()) roi.setPosition(c, z, t);
+        else if (projection && view != null && view.getStackSize() > 1) roi.setPosition(t);
+        else roi.setPosition(z);
+    }
+
+    private int currentC(ImagePlus target) {
+        return target != null && target.isHyperStack() ? Math.max(1, target.getC()) : 1;
+    }
+
+    private int currentT(ImagePlus target) {
+        if (target == null) return 1;
+        if (target.isHyperStack()) return Math.max(1, target.getT());
+        if (target.getNFrames() > 1) return Math.max(1, target.getT());
+        if (target.getNSlices() > 1 && target.getNChannels() <= 1) return Math.max(1, target.getCurrentSlice());
+        return 1;
+    }
+
+    private int currentZFor(ImagePlus target) {
+        return target != null && target.getNSlices() > 1 ? Math.max(1, target.getZ()) : 1;
     }
 
     private void clearOverlay() {
         if (image != null) {
             image.setOverlay(null);
             image.updateAndDraw();
+        }
+        clearSubOverlay();
+    }
+
+    private void clearSubOverlay() {
+        if (subImage != null) {
+            subImage.setOverlay(null);
+            subImage.updateAndDraw();
         }
     }
 
@@ -191,7 +239,7 @@ final class TimeSeriesTrackTab extends JPanel {
             @Override public void imageOpened(ImagePlus imp) {}
             @Override public void imageClosed(ImagePlus imp) {}
             @Override public void imageUpdated(ImagePlus imp) {
-                if (imp == image && active && !renderingOverlay && positionChanged()) {
+                if ((imp == image || imp == subImage) && active && !renderingOverlay && positionChanged(imp)) {
                     SwingUtilities.invokeLater(() -> renderOverlay());
                 }
             }
@@ -204,22 +252,40 @@ final class TimeSeriesTrackTab extends JPanel {
         listener = null;
     }
 
-    private boolean positionChanged() {
-        if (image == null) return false;
-        return image.getC() != lastC || image.getZ() != lastZ || image.getT() != lastT;
+    private boolean positionChanged(ImagePlus target) {
+        if (target == null) return false;
+        if (target == subImage) {
+            return target.getC() != lastSubC || target.getZ() != lastSubZ
+                || target.getT() != lastSubT || target.getCurrentSlice() != lastSubSlice;
+        }
+        return target.getC() != lastC || target.getZ() != lastZ
+            || target.getT() != lastT || target.getCurrentSlice() != lastSlice;
     }
 
-    private void rememberRenderedPosition() {
-        if (image == null) return;
-        lastC = image.getC();
-        lastZ = image.getZ();
-        lastT = image.getT();
+    private void rememberRenderedPosition(ImagePlus target, boolean projection) {
+        if (target == null) return;
+        if (projection || target == subImage) {
+            lastSubC = target.getC();
+            lastSubZ = target.getZ();
+            lastSubT = target.getT();
+            lastSubSlice = target.getCurrentSlice();
+            return;
+        }
+        lastC = target.getC();
+        lastZ = target.getZ();
+        lastT = target.getT();
+        lastSlice = target.getCurrentSlice();
     }
 
     private void resetRenderedPosition() {
         lastC = -1;
         lastZ = -1;
         lastT = -1;
+        lastSlice = -1;
+        lastSubC = -1;
+        lastSubZ = -1;
+        lastSubT = -1;
+        lastSubSlice = -1;
     }
 
     private static List<Track> toTracks(TrackTree tree) {

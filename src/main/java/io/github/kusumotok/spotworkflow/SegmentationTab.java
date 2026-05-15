@@ -1775,8 +1775,11 @@ public final class SegmentationTab extends JPanel {
     }
 
     private int zprojCurrentTFrame(ImagePlus zp) {
-        if (zp == null || zp.getNFrames() <= 1) return 1;
-        return zp.isHyperStack() ? Math.max(1, zp.getT()) : Math.max(1, zp.getCurrentSlice());
+        if (zp == null) return 1;
+        if (zp.isHyperStack() && zp.getNFrames() > 1) return Math.max(1, zp.getT());
+        if (zp.getNFrames() > 1) return Math.max(1, zp.getT());
+        if (zp.getNSlices() > 1 && zp.getNChannels() <= 1) return Math.max(1, zp.getCurrentSlice());
+        return 1;
     }
 
     private boolean roiContains(Roi roi, int x, int y) {

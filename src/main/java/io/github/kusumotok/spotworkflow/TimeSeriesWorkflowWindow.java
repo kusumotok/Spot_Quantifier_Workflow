@@ -39,7 +39,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private final JTabbedPane tabs = new JTabbedPane();
     private final SegmentationTab seedTab = new SegmentationTab(SegmentationTab.Mode.SEED);
     private final SegmentationTab areaTab = new SegmentationTab(SegmentationTab.Mode.AREA_RESULT);
-    private final MeasurementTab measurementTab = new MeasurementTab();
+    private final TimeSeriesMeasurementTab measurementTab = new TimeSeriesMeasurementTab();
     private final RoiExplorerPanel seedRoiPanel = new RoiExplorerPanel();
     private final TimeSeriesTrackTab trackTab = new TimeSeriesTrackTab();
     private final RoiExplorerPanel resultMeasurePanel = new RoiExplorerPanel();
@@ -221,6 +221,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         seedTab.setExternalZProjTitle(zproj);
         areaTab.setExternalZProjTitle(zproj);
         syncSeedEditSubImage();
+        syncTrackSubImage();
     }
 
     private void syncSeedEditSubImage() {
@@ -228,6 +229,14 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             seedRoiPanel.clearSubBindImage();
         } else {
             seedRoiPanel.setSubBindImage(zprojImage);
+        }
+    }
+
+    private void syncTrackSubImage() {
+        if (boundImage == null || zprojImage == null || zprojImage == boundImage) {
+            trackTab.setSubImage(null);
+        } else {
+            trackTab.setSubImage(zprojImage);
         }
     }
 
@@ -526,14 +535,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         resultMeasurePanel.openFolder(resultRoot);
         Path csvPath = timeSeriesMeasurementCsv(projectFolder, resultRoot);
         setStatus("Measuring XYZT track comparison: " + resultRoot.getFileName());
-        MeasurementRequest baseRequest = MeasurementRequest
-            .useProfile(new io.github.kusumotok.roiexplorer.service.measure.XyztTrackComparisonProfile(measurementTab.getSelectedColumns()))
-            .withEnabledColumns(measurementTab.getSelectedColumns())
-            .withShowResultsTable(measurementTab.isShowTableSelected())
-            .withMeasureAll(true);
-        final MeasurementRequest request = measurementTab.isSaveCsvSelected()
-            ? baseRequest.withCsvOutput(csvPath)
-            : baseRequest;
+        final MeasurementRequest request = measurementTab.buildRequest(csvPath);
         new SwingWorker<MeasurementResult, Void>() {
             @Override protected MeasurementResult doInBackground() {
                 return measureCtrl.measure(request);
