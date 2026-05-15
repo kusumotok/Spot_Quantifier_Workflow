@@ -788,9 +788,14 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private Path ensureProjectFolder() {
         if (projectFolder != null) return projectFolder;
         try {
-            Path dir = boundImage.getOriginalFileInfo() != null && boundImage.getOriginalFileInfo().directory != null
-                ? java.nio.file.Paths.get(boundImage.getOriginalFileInfo().directory)
-                : java.nio.file.Paths.get(System.getProperty("user.home"));
+            Path dir = seedTab.getEffectiveSaveBaseDir();
+            if (dir == null) {
+                JFileChooser chooser = new JFileChooser();
+                chooser.setDialogTitle("Choose save location for result folder");
+                chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+                if (chooser.showSaveDialog(this) != JFileChooser.APPROVE_OPTION) return null;
+                dir = chooser.getSelectedFile().toPath();
+            }
             String pattern = seedTab.getParams().resultFolderPattern;
             if (pattern == null || pattern.trim().isEmpty()) pattern = "{name} result";
             String imageName = boundImage.getTitle().replaceAll("\\.[^.]+$", "");
