@@ -16,6 +16,9 @@ import java.util.Set;
 import java.util.function.Consumer;
 
 public final class TimeSeriesTrackController {
+    private static final double MIN_AUTO_LINK_DISTANCE = 25.0;
+    private static final double AUTO_LINK_RADIUS_FACTOR = 6.0;
+
     private final TrackTreeIo treeIo = new TrackTreeIo();
     private final TrackValidator validator = new TrackValidator();
 
@@ -39,7 +42,7 @@ public final class TimeSeriesTrackController {
             List<ObjectInfo> currentObjects = readObjects(timeRoot, t);
             Set<Integer> usedPrevious = new HashSet<>();
             for (ObjectInfo current : currentObjects) {
-                ObjectInfo best = nearestUnused(current, previousObjects, usedPrevious);
+                ObjectInfo best = mutualNearestWithinLimit(current, currentObjects, previousObjects, usedPrevious);
                 TrackTree.TrackNode track;
                 if (best != null) {
                     track = best.track;
@@ -86,7 +89,7 @@ public final class TimeSeriesTrackController {
             for (Path object : objects) {
                 List<Roi> rois = TrackTreeIo.readRois(object);
                 if (rois.isEmpty()) continue;
-                out.add(new ObjectInfo(index++, t, object, rois, centroid(rois)));
+                out.add(new ObjectInfo(index++, t, object, rois, centroid(rois), objectRadius(rois)));
             }
         }
         return out;
@@ -108,11 +111,33 @@ public final class TimeSeriesTrackController {
         return new Point3(sx / n, sy / n, sz / n);
     }
 
-    private static ObjectInfo nearestUnused(ObjectInfo current, List<ObjectInfo> previous, Set<Integer> usedPrevious) {
+    private static double objectRadius(List<Roi> rois) {
+        double sum = 0.0;
+        int n = 0;
+        for (Roi roi : rois) {
+            if (roi == null) continue;
+            java.awt.Rectangle b = roi.getBounds();
+            sum += 0.5 * Math.hypot(b.getWidth(), b.getHeight());
+            n++;
+        }
+        return n == 0 ? 1.0 : Math.max(1.0, sum / n);
+    }
+
+    private static ObjectInfo mutualNearestWithinLimit(ObjectInfo current, List<ObjectInfo> currentObjects,
+                                                       List<ObjectInfo> previous, Set<Integer> usedPrevious) {
+        ObjectInfo best = nearestPreviousWithinLimit(current, previous, usedPrevious);
+        if (best == null) return null;
+        ObjectInfo reverse = nearestCurrentWithinLimit(best, currentObjects);
+        return reverse == current ? best : null;
+    }
+
+    private static ObjectInfo nearestPreviousWithinLimit(ObjectInfo current, List<ObjectInfo> previous,
+                                                        Set<Integer> usedPrevious) {
         ObjectInfo best = null;
         double bestD2 = Double.POSITIVE_INFINITY;
         for (ObjectInfo candidate : previous) {
             if (usedPrevious.contains(candidate.index)) continue;
+            if (!withinAutoLinkLimit(current, candidate)) continue;
             double d2 = current.centroid.distance2(candidate.centroid);
             if (d2 < bestD2) {
                 bestD2 = d2;
@@ -120,6 +145,26 @@ public final class TimeSeriesTrackController {
             }
         }
         return best;
+    }
+
+    private static ObjectInfo nearestCurrentWithinLimit(ObjectInfo previous, List<ObjectInfo> currentObjects) {
+        ObjectInfo best = null;
+        double bestD2 = Double.POSITIVE_INFINITY;
+        for (ObjectInfo candidate : currentObjects) {
+            if (!withinAutoLinkLimit(candidate, previous)) continue;
+            double d2 = candidate.centroid.distance2(previous.centroid);
+            if (d2 < bestD2) {
+                bestD2 = d2;
+                best = candidate;
+            }
+        }
+        return best;
+    }
+
+    private static boolean withinAutoLinkLimit(ObjectInfo current, ObjectInfo previous) {
+        double limit = Math.max(MIN_AUTO_LINK_DISTANCE,
+            AUTO_LINK_RADIUS_FACTOR * Math.max(current.radius, previous.radius));
+        return current.centroid.distance2(previous.centroid) <= limit * limit;
     }
 
     private static int parseTimeFolder(Path path) {
@@ -149,14 +194,16 @@ public final class TimeSeriesTrackController {
         final Path path;
         final List<Roi> rois;
         final Point3 centroid;
+        final double radius;
         TrackTree.TrackNode track;
 
-        ObjectInfo(int index, int t, Path path, List<Roi> rois, Point3 centroid) {
+        ObjectInfo(int index, int t, Path path, List<Roi> rois, Point3 centroid, double radius) {
             this.index = index;
             this.t = t;
             this.path = path;
             this.rois = rois;
             this.centroid = centroid;
+            this.radius = radius;
         }
     }
 
