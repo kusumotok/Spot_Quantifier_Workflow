@@ -11,8 +11,13 @@ import io.github.kusumotok.spotworkflow.tracking.TrackValidator;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.event.ActionEvent;
+import java.awt.event.InputEvent;
+import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.event.MouseMotionAdapter;
+import java.awt.event.MouseWheelEvent;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 import java.nio.file.Path;
@@ -41,8 +46,14 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private final JSpinner leftCSpinner;
     private final JSpinner rightCSpinner;
     private final JLabel status = new JLabel(" ");
+    private final JLabel selectionStatus = new JLabel("Select objects on T and T+1, then press Link. Double-click a right object to link.");
+    private final JButton linkButton = new JButton("Link / Replace");
+    private final JButton unlinkButton = new JButton("Unlink right");
+    private final JButton saveButton = new JButton("Save Tracking");
+    private final java.awt.event.AWTEventListener dragReleaseListener = this::handleGlobalMouseRelease;
     private TrackTree tree;
     private boolean renderingOverlay;
+    private TrackEditor.ObjRef draggingLeftRef;
     private final java.util.Map<TrackTree.ObjNode, java.util.List<Roi>> roiOverlayCache =
         new java.util.IdentityHashMap<TrackTree.ObjNode, java.util.List<Roi>>();
     private final java.util.Map<TrackTree.ObjNode, OvalRoi> centroidOverlayCache =
@@ -69,28 +80,37 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         rightCSpinner = new JSpinner(new SpinnerNumberModel(image != null ? Math.max(1, image.getC()) : 1, 1, maxC, 1));
         buildUi();
         installListeners();
+        Toolkit.getDefaultToolkit().addAWTEventListener(dragReleaseListener, AWTEvent.MOUSE_EVENT_MASK);
         reloadLists();
         pack();
-        setSize(Math.max(620, getWidth()), Math.max(420, getHeight()));
+        setSize(Math.max(980, getWidth()), Math.max(680, getHeight()));
         setLocationRelativeTo(owner);
         renderOverlay();
     }
 
     private void buildUi() {
         setLayout(new BorderLayout(6, 6));
-        JPanel top = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
-        top.add(new JLabel("T:"));
-        top.add(timeSpinner);
-        top.add(new JLabel("left=T, right=T+1"));
-        top.add(zProjMode);
-        top.add(zSync);
-        top.add(cSync);
-        top.add(new JLabel("C L/R:"));
-        top.add(leftCSpinner);
-        top.add(rightCSpinner);
-        top.add(new JLabel("Z L/R:"));
-        top.add(leftZSpinner);
-        top.add(rightZSpinner);
+        JPanel top = new JPanel();
+        top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
+        JPanel mainControls = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
+        mainControls.add(new JLabel("T:"));
+        mainControls.add(timeSpinner);
+        mainControls.add(new JLabel("left=T, right=T+1"));
+        mainControls.add(zProjMode);
+        mainControls.add(zSync);
+        mainControls.add(cSync);
+        mainControls.add(new JLabel("C L/R:"));
+        mainControls.add(leftCSpinner);
+        mainControls.add(rightCSpinner);
+        mainControls.add(new JLabel("Z L/R:"));
+        mainControls.add(leftZSpinner);
+        mainControls.add(rightZSpinner);
+        JPanel helpRow = new JPanel(new BorderLayout(4, 0));
+        selectionStatus.setForeground(new Color(70, 70, 70));
+        helpRow.setBorder(BorderFactory.createEmptyBorder(0, 8, 2, 8));
+        helpRow.add(selectionStatus, BorderLayout.CENTER);
+        top.add(mainControls);
+        top.add(helpRow);
         add(top, BorderLayout.NORTH);
 
         JPanel imageViews = new JPanel(new GridLayout(1, 2, 6, 0));
@@ -101,23 +121,20 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         lists.add(panelWithTitle("T", leftList));
         lists.add(panelWithTitle("T+1", rightList));
         JSplitPane center = new JSplitPane(JSplitPane.VERTICAL_SPLIT, imageViews, lists);
-        center.setResizeWeight(0.72);
-        center.setDividerLocation(0.72);
+        center.setResizeWeight(0.86);
+        center.setDividerLocation(520);
         add(center, BorderLayout.CENTER);
 
-        JButton link = new JButton("Link selected");
-        JButton unlink = new JButton("Unlink right to new track");
-        JButton save = new JButton("Save Tracking");
         JButton close = new JButton("Close");
-        link.addActionListener(e -> linkSelected());
-        unlink.addActionListener(e -> unlinkSelected());
-        save.addActionListener(e -> save());
+        linkButton.addActionListener(e -> linkSelected());
+        unlinkButton.addActionListener(e -> unlinkSelected());
+        saveButton.addActionListener(e -> save());
         close.addActionListener(e -> dispose());
 
         JPanel actions = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 2));
-        actions.add(link);
-        actions.add(unlink);
-        actions.add(save);
+        actions.add(linkButton);
+        actions.add(unlinkButton);
+        actions.add(saveButton);
         actions.add(close);
         JPanel bottom = new JPanel(new BorderLayout());
         bottom.add(actions, BorderLayout.NORTH);
@@ -129,6 +146,8 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         JPanel p = new JPanel(new BorderLayout(0, 2));
         p.setBorder(BorderFactory.createTitledBorder(title));
         list.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
+        list.setVisibleRowCount(5);
+        list.setCellRenderer(new ObjRefRenderer());
         p.add(new JScrollPane(list), BorderLayout.CENTER);
         return p;
     }
@@ -155,18 +174,24 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             updateImagePanes();
         });
         rightCSpinner.addChangeListener(e -> updateImagePanes());
-        leftList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderOverlay(); });
-        rightList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) renderOverlay(); });
+        leftList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) selectionChanged(); });
+        rightList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) selectionChanged(); });
+        installShortcuts();
         updateModeControlsAndImages();
     }
 
     private void reloadLists() {
         int t = currentT();
+        TrackTree.ObjNode leftSelected = leftList.getSelectedValue() != null ? leftList.getSelectedValue().obj : null;
+        TrackTree.ObjNode rightSelected = rightList.getSelectedValue() != null ? rightList.getSelectedValue().obj : null;
         renderingOverlay = true;
         fill(leftModel, editor.objectsAt(tree, t));
         fill(rightModel, editor.objectsAt(tree, t + 1));
+        selectObject(leftList, leftModel, leftSelected);
+        selectObject(rightList, rightModel, rightSelected);
         renderingOverlay = false;
         status.setText("Editing links for T" + t + " -> T" + (t + 1));
+        updateSelectionStatus();
         updateImagePanes();
         renderOverlay();
     }
@@ -230,6 +255,65 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         if (renderingOverlay) return;
         leftPane.repaint();
         rightPane.repaint();
+    }
+
+    private void selectionChanged() {
+        updateSelectionStatus();
+        renderOverlay();
+    }
+
+    private void updateSelectionStatus() {
+        TrackEditor.ObjRef left = leftList.getSelectedValue();
+        TrackEditor.ObjRef right = rightList.getSelectedValue();
+        linkButton.setEnabled(left != null && right != null);
+        unlinkButton.setEnabled(right != null);
+        String l = left != null ? objLabel(left) : "none";
+        String r = right != null ? objLabel(right) : "none";
+        selectionStatus.setText("Selected: T" + currentT() + " " + l + "  ->  T" + (currentT() + 1) + " " + r
+            + "    Shortcuts: Enter=link, Delete=unlink, A/D=T-1/T+1, Ctrl+S=save");
+    }
+
+    private static String objLabel(TrackEditor.ObjRef ref) {
+        return ref.obj.getGlobalId() + " / " + ref.obj.getSourceObjId()
+            + " [" + ref.parent.getGlobalId() + "]";
+    }
+
+    private static void selectObject(JList<TrackEditor.ObjRef> list, DefaultListModel<TrackEditor.ObjRef> model,
+                                     TrackTree.ObjNode obj) {
+        if (obj == null) return;
+        for (int i = 0; i < model.size(); i++) {
+            if (model.get(i).obj == obj) {
+                list.setSelectedIndex(i);
+                list.ensureIndexIsVisible(i);
+                return;
+            }
+        }
+    }
+
+    private void installShortcuts() {
+        JRootPane root = getRootPane();
+        bind(root, "link", KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), e -> linkSelected());
+        bind(root, "unlink", KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), e -> unlinkSelected());
+        bind(root, "save", KeyStroke.getKeyStroke(KeyEvent.VK_S, InputEvent.CTRL_DOWN_MASK), e -> save());
+        bind(root, "prevT", KeyStroke.getKeyStroke(KeyEvent.VK_A, 0), e -> bumpTime(-1));
+        bind(root, "nextT", KeyStroke.getKeyStroke(KeyEvent.VK_D, 0), e -> bumpTime(1));
+    }
+
+    private static void bind(JComponent c, String name, KeyStroke key, java.util.function.Consumer<ActionEvent> action) {
+        c.getInputMap(JComponent.WHEN_IN_FOCUSED_WINDOW).put(key, name);
+        c.getActionMap().put(name, new AbstractAction() {
+            @Override public void actionPerformed(ActionEvent e) {
+                action.accept(e);
+            }
+        });
+    }
+
+    private void bumpTime(int delta) {
+        SpinnerNumberModel model = (SpinnerNumberModel) timeSpinner.getModel();
+        int value = intValue(timeSpinner) + delta;
+        int min = ((Number) model.getMinimum()).intValue();
+        int max = ((Number) model.getMaximum()).intValue();
+        if (value >= min && value <= max) timeSpinner.setValue(value);
     }
 
     private void updateImagePanes() {
@@ -334,7 +418,24 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     }
 
     @Override public void dispose() {
+        Toolkit.getDefaultToolkit().removeAWTEventListener(dragReleaseListener);
         super.dispose();
+    }
+
+    private void handleGlobalMouseRelease(AWTEvent event) {
+        if (!(event instanceof MouseEvent) || ((MouseEvent) event).getID() != MouseEvent.MOUSE_RELEASED) return;
+        if (draggingLeftRef == null) return;
+        MouseEvent mouse = (MouseEvent) event;
+        Point p = SwingUtilities.convertPoint((Component) mouse.getSource(), mouse.getPoint(), rightPane);
+        TrackEditor.ObjRef right = rightPane.findAt(p.x, p.y);
+        if (right != null) {
+            leftList.setSelectedValue(draggingLeftRef, true);
+            rightList.setSelectedValue(right, true);
+            linkSelected();
+        }
+        draggingLeftRef = null;
+        leftPane.repaint();
+        rightPane.repaint();
     }
 
     private static BufferedImage createMaxProjection(ImagePlus image, int c, int t) {
@@ -415,13 +516,35 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
         LinkerImagePane(boolean left) {
             this.left = left;
-            setPreferredSize(new Dimension(280, 240));
+            setPreferredSize(new Dimension(460, 380));
             setBackground(Color.BLACK);
             addMouseListener(new MouseAdapter() {
+                @Override public void mousePressed(MouseEvent e) {
+                    TrackEditor.ObjRef selected = selectAt(e.getX(), e.getY());
+                    if (left) draggingLeftRef = selected;
+                }
                 @Override public void mouseClicked(MouseEvent e) {
-                    selectAt(e.getX(), e.getY());
+                    TrackEditor.ObjRef selected = selectAt(e.getX(), e.getY());
+                    if (!left && selected != null && e.getClickCount() >= 2 && leftList.getSelectedValue() != null) {
+                        linkSelected();
+                    }
+                }
+                @Override public void mouseExited(MouseEvent e) {
+                    hoverRef = null;
+                    repaint();
                 }
             });
+            addMouseMotionListener(new MouseMotionAdapter() {
+                @Override public void mouseMoved(MouseEvent e) {
+                    hoverRef = findAt(e.getX(), e.getY());
+                    if (hoverRef != null) {
+                        status.setText("Hover " + (left ? "T" + currentT() : "T" + (currentT() + 1)) + ": "
+                            + objLabel(hoverRef));
+                    }
+                    repaint();
+                }
+            });
+            addMouseWheelListener(this::wheelMoved);
         }
 
         void setFrame(int time, BufferedImage frame, java.util.List<TrackEditor.ObjRef> refs, int zFilter) {
@@ -451,10 +574,16 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         private void paintObjects(Graphics2D g2, Rectangle draw) {
             paintTrajectories(g2, draw);
             TrackEditor.ObjRef selected = left ? leftList.getSelectedValue() : rightList.getSelectedValue();
+            TrackEditor.ObjRef peer = left ? rightList.getSelectedValue() : leftList.getSelectedValue();
             for (TrackEditor.ObjRef ref : refs) {
-                Color color = ref == selected ? (left ? Color.YELLOW : Color.CYAN) : new Color(210, 210, 210, 150);
+                boolean sameTrack = peer != null && peer.parent == ref.parent;
+                boolean hovered = ref == hoverRef;
+                Color color = ref == selected ? (left ? Color.YELLOW : Color.CYAN)
+                    : hovered ? Color.ORANGE
+                    : sameTrack ? new Color(0, 230, 120, 210)
+                    : new Color(210, 210, 210, 150);
                 g2.setColor(color);
-                g2.setStroke(new BasicStroke(ref == selected ? 2f : 1f));
+                g2.setStroke(new BasicStroke(ref == selected || hovered ? 2.4f : 1.1f));
                 java.util.List<Roi> rois = roiOverlayCache.get(ref.obj);
                 if (rois != null) {
                     for (Roi roi : rois) {
@@ -464,6 +593,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 }
                 Point p = toView(draw, ref.obj.centerX(), ref.obj.centerY());
                 g2.fillOval(p.x - 3, p.y - 3, 6, 6);
+                g2.drawString(ref.obj.getGlobalId(), p.x + 5, p.y - 5);
             }
         }
 
@@ -512,9 +642,18 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             g2.drawPolygon(xs, ys, poly.npoints);
         }
 
-        private void selectAt(int x, int y) {
+        private TrackEditor.ObjRef selectAt(int x, int y) {
+            TrackEditor.ObjRef best = findAt(x, y);
+            if (best != null) {
+                if (left) leftList.setSelectedValue(best, true);
+                else rightList.setSelectedValue(best, true);
+            }
+            return best;
+        }
+
+        private TrackEditor.ObjRef findAt(int x, int y) {
             Rectangle draw = imageRect();
-            if (frame == null || !draw.contains(x, y)) return;
+            if (frame == null || !draw.contains(x, y)) return null;
             double ix = (x - draw.x) / scale(draw);
             double iy = (y - draw.y) / scale(draw);
             TrackEditor.ObjRef best = null;
@@ -531,9 +670,15 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                     }
                 }
             }
-            if (best != null) {
-                if (left) leftList.setSelectedValue(best, true);
-                else rightList.setSelectedValue(best, true);
+            return best;
+        }
+
+        private void wheelMoved(MouseWheelEvent e) {
+            if (e.isShiftDown() && !zProjMode.isSelected()) {
+                JSpinner spinner = left ? leftZSpinner : rightZSpinner;
+                bumpSpinner(spinner, -e.getWheelRotation());
+            } else {
+                bumpTime(e.getWheelRotation() > 0 ? 1 : -1);
             }
         }
 
@@ -558,6 +703,29 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             int rz = roi.getZPosition();
             if (rz <= 0) rz = roi.getPosition();
             return rz <= 0 || rz == z;
+        }
+
+        private TrackEditor.ObjRef hoverRef;
+    }
+
+    private static void bumpSpinner(JSpinner spinner, int delta) {
+        SpinnerNumberModel model = (SpinnerNumberModel) spinner.getModel();
+        int value = intValue(spinner) + delta;
+        int min = ((Number) model.getMinimum()).intValue();
+        int max = ((Number) model.getMaximum()).intValue();
+        if (value >= min && value <= max) spinner.setValue(value);
+    }
+
+    private static final class ObjRefRenderer extends DefaultListCellRenderer {
+        @Override public Component getListCellRendererComponent(JList<?> list, Object value, int index,
+                                                               boolean isSelected, boolean cellHasFocus) {
+            JLabel label = (JLabel) super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus);
+            if (value instanceof TrackEditor.ObjRef) {
+                TrackEditor.ObjRef ref = (TrackEditor.ObjRef) value;
+                label.setText(ref.obj.getGlobalId() + "  " + ref.obj.getSourceObjId()
+                    + "    track " + ref.parent.getGlobalId());
+            }
+            return label;
         }
     }
 
