@@ -19,6 +19,24 @@ public final class TrackEditor {
         left.parent.addChild(leftIndex + 1, right.obj);
     }
 
+    public ObjRef nextObject(TrackTree tree, ObjRef ref) {
+        if (tree == null || ref == null) return null;
+        List<ObjRef> refs = objectsAt(tree, ref.obj.firstT() + 1);
+        for (ObjRef candidate : refs) {
+            if (candidate.parent == ref.parent) return candidate;
+        }
+        return null;
+    }
+
+    public ObjRef previousObject(TrackTree tree, ObjRef ref) {
+        if (tree == null || ref == null) return null;
+        List<ObjRef> refs = objectsAt(tree, ref.obj.firstT() - 1);
+        for (ObjRef candidate : refs) {
+            if (candidate.parent == ref.parent) return candidate;
+        }
+        return null;
+    }
+
     public void unlinkToNewTrack(TrackTree tree, ObjRef ref) {
         if (tree == null || ref == null) return;
         ref.parent.removeChild(ref.obj);

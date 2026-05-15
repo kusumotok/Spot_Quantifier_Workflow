@@ -56,6 +56,9 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private int preferredChannel = 1;
     private int previousTabIndex = 0;
     private ImageListener targetImageListener;
+    private TimeSeriesTrackLinkerDialog linkerDialog;
+    private Path linkerTracksRoot;
+    private ImagePlus linkerImage;
 
     public static synchronized TimeSeriesWorkflowWindow getInstance() {
         if (instance == null) instance = new TimeSeriesWorkflowWindow();
@@ -462,12 +465,31 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             setStatus("Missing seed_tracks. Run Auto Track + Save first.");
             return;
         }
+        if (linkerDialog != null && linkerDialog.isDisplayable()) {
+            if (tracksRoot.equals(linkerTracksRoot) && boundImage == linkerImage) {
+                linkerDialog.focusLinker();
+                return;
+            }
+            linkerDialog.dispose();
+            linkerDialog = null;
+        }
         try {
-            TimeSeriesTrackLinkerDialog dialog = new TimeSeriesTrackLinkerDialog(this, boundImage, tracksRoot, () -> {
+            linkerTracksRoot = tracksRoot;
+            linkerImage = boundImage;
+            linkerDialog = new TimeSeriesTrackLinkerDialog(this, boundImage, tracksRoot, () -> {
                 trackTab.setTracksRoot(tracksRoot);
                 setStatus("Tracking saved: " + tracksRoot);
             });
-            dialog.setVisible(true);
+            linkerDialog.addWindowListener(new WindowAdapter() {
+                @Override public void windowClosed(WindowEvent e) {
+                    if (e.getWindow() == linkerDialog) {
+                        linkerDialog = null;
+                        linkerTracksRoot = null;
+                        linkerImage = null;
+                    }
+                }
+            });
+            linkerDialog.setVisible(true);
         } catch (Exception e) {
             setStatus("Linker error: " + e.getMessage());
             JOptionPane.showMessageDialog(this, e.getMessage(), "Track Linker", JOptionPane.ERROR_MESSAGE);
