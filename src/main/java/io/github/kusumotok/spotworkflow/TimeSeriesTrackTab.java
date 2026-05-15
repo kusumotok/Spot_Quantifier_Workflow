@@ -39,6 +39,10 @@ final class TimeSeriesTrackTab extends JPanel {
     private List<Track> tracks = Collections.emptyList();
     private boolean active;
     private ImageListener listener;
+    private boolean renderingOverlay;
+    private int lastC = -1;
+    private int lastZ = -1;
+    private int lastT = -1;
 
     TimeSeriesTrackTab() {
         super(new BorderLayout(0, 4));
@@ -79,7 +83,10 @@ final class TimeSeriesTrackTab extends JPanel {
 
     void setActive(boolean active) {
         this.active = active;
-        if (active) renderOverlay();
+        if (active) {
+            resetRenderedPosition();
+            renderOverlay();
+        }
         else clearOverlay();
     }
 
@@ -116,29 +123,38 @@ final class TimeSeriesTrackTab extends JPanel {
     }
 
     private void renderOverlay() {
-        if (!active || image == null) return;
+        if (!active || image == null || renderingOverlay) return;
+        renderingOverlay = true;
         Overlay overlay = new Overlay();
-        int currentT = image.isHyperStack() ? Math.max(1, image.getT()) : 1;
-        for (Track track : tracks) {
-            addTrajectory(overlay, track);
-            for (TrackSpot spot : track.spots) {
-                if (spot.t != currentT) continue;
-                for (Roi roi : spot.rois) {
-                    Roi clone = (Roi) roi.clone();
-                    clone.setStrokeColor(Color.YELLOW);
-                    overlay.add(clone);
+        try {
+            int currentC = image.isHyperStack() ? Math.max(1, image.getC()) : 1;
+            int currentT = image.isHyperStack() ? Math.max(1, image.getT()) : 1;
+            for (Track track : tracks) {
+                addTrajectory(overlay, track, currentC, currentT);
+                for (TrackSpot spot : track.spots) {
+                    if (spot.t != currentT) continue;
+                    for (Roi roi : spot.rois) {
+                        Roi clone = (Roi) roi.clone();
+                        clone.setStrokeColor(Color.YELLOW);
+                        applyCurrentPosition(clone, roi, currentC, currentT);
+                        overlay.add(clone);
+                    }
+                    OvalRoi dot = new OvalRoi(spot.x - 3.0, spot.y - 3.0, 6.0, 6.0);
+                    dot.setStrokeColor(Color.CYAN);
+                    dot.setFillColor(new Color(0, 255, 255, 90));
+                    dot.setPosition(currentC, currentZForDot(), currentT);
+                    overlay.add(dot);
                 }
-                OvalRoi dot = new OvalRoi(spot.x - 3.0, spot.y - 3.0, 6.0, 6.0);
-                dot.setStrokeColor(Color.CYAN);
-                dot.setFillColor(new Color(0, 255, 255, 90));
-                overlay.add(dot);
             }
+            image.setOverlay(overlay.size() > 0 ? overlay : null);
+            rememberRenderedPosition();
+            image.updateAndDraw();
+        } finally {
+            renderingOverlay = false;
         }
-        image.setOverlay(overlay);
-        image.updateAndDraw();
     }
 
-    private void addTrajectory(Overlay overlay, Track track) {
+    private void addTrajectory(Overlay overlay, Track track, int c, int t) {
         List<TrackSpot> spots = track.spots;
         for (int i = 1; i < spots.size(); i++) {
             TrackSpot a = spots.get(i - 1);
@@ -146,8 +162,20 @@ final class TimeSeriesTrackTab extends JPanel {
             Line line = new Line(a.x, a.y, b.x, b.y);
             line.setStrokeColor(new Color(0, 180, 255, 160));
             line.setStrokeWidth(1.5);
+            line.setPosition(c, currentZForDot(), t);
             overlay.add(line);
         }
+    }
+
+    private void applyCurrentPosition(Roi target, Roi source, int c, int t) {
+        int z = source.getZPosition();
+        if (z <= 0) z = source.getPosition();
+        if (z <= 0) z = currentZForDot();
+        target.setPosition(c, z, t);
+    }
+
+    private int currentZForDot() {
+        return image != null && image.getNSlices() > 1 ? Math.max(1, image.getZ()) : 1;
     }
 
     private void clearOverlay() {
@@ -163,7 +191,9 @@ final class TimeSeriesTrackTab extends JPanel {
             @Override public void imageOpened(ImagePlus imp) {}
             @Override public void imageClosed(ImagePlus imp) {}
             @Override public void imageUpdated(ImagePlus imp) {
-                if (imp == image && active) SwingUtilities.invokeLater(() -> renderOverlay());
+                if (imp == image && active && !renderingOverlay && positionChanged()) {
+                    SwingUtilities.invokeLater(() -> renderOverlay());
+                }
             }
         };
         ImagePlus.addImageListener(listener);
@@ -172,6 +202,24 @@ final class TimeSeriesTrackTab extends JPanel {
     private void uninstallListener() {
         if (listener != null) ImagePlus.removeImageListener(listener);
         listener = null;
+    }
+
+    private boolean positionChanged() {
+        if (image == null) return false;
+        return image.getC() != lastC || image.getZ() != lastZ || image.getT() != lastT;
+    }
+
+    private void rememberRenderedPosition() {
+        if (image == null) return;
+        lastC = image.getC();
+        lastZ = image.getZ();
+        lastT = image.getT();
+    }
+
+    private void resetRenderedPosition() {
+        lastC = -1;
+        lastZ = -1;
+        lastT = -1;
     }
 
     private static List<Track> toTracks(TrackTree tree) {
