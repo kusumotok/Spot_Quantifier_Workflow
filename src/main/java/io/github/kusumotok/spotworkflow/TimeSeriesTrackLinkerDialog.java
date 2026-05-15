@@ -75,6 +75,8 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private TrackTree tree;
     private boolean updatingControls;
     private TrackEditor.ObjRef draggingLeftRef;
+    private Side lastSelectedSide;
+    private int lastPairT = 1;
     private double viewScale = 0.0;
     private double viewOffsetX = 0.0;
     private double viewOffsetY = 0.0;
@@ -230,12 +232,11 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
     private void reloadPair() {
         if (updatingControls) return;
-        TrackTree.ObjNode oldLeft = selectedObj(leftList);
-        TrackTree.ObjNode oldRight = selectedObj(rightList);
+        boolean timeChanged = currentT() != lastPairT;
+        lastPairT = currentT();
         fill(leftModel, editor.objectsAt(tree, currentT()));
         fill(rightModel, editor.objectsAt(tree, currentT() + 1));
-        selectObject(leftList, leftModel, oldLeft);
-        selectObject(rightList, rightModel, oldRight);
+        if (timeChanged) clearSelectionOnly();
         updateImages();
         updateSelectionState();
     }
@@ -267,25 +268,8 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     }
 
     private void selectionChanged() {
-        syncExistingLinkedSelection();
         updateSelectionState();
         repaintPanes();
-    }
-
-    private void syncExistingLinkedSelection() {
-        TrackEditor.ObjRef left = leftList.getSelectedValue();
-        TrackEditor.ObjRef right = rightList.getSelectedValue();
-        if (left != null && right == null) {
-            TrackEditor.ObjRef next = editor.nextObject(tree, left);
-            if (next != null && next.obj.firstT() == currentT() + 1) {
-                selectObject(rightList, rightModel, next.obj);
-            }
-        } else if (right != null && left == null) {
-            TrackEditor.ObjRef prev = editor.previousObject(tree, right);
-            if (prev != null && prev.obj.firstT() == currentT()) {
-                selectObject(leftList, leftModel, prev.obj);
-            }
-        }
     }
 
     private void updateSelectionState() {
@@ -360,12 +344,17 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     }
 
     private void clearSelection() {
+        clearSelectionOnly();
+        updateSelectionState();
+        repaintPanes();
+    }
+
+    private void clearSelectionOnly() {
         leftList.clearSelection();
         rightList.clearSelection();
         leftPane.hoverRef = null;
         rightPane.hoverRef = null;
-        updateSelectionState();
-        repaintPanes();
+        lastSelectedSide = null;
     }
 
     private void save() {
@@ -499,6 +488,31 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             linkSelected(false);
         }
         draggingLeftRef = null;
+        repaintPanes();
+    }
+
+    private void objectClicked(Side side, TrackEditor.ObjRef selected) {
+        if (selected == null) return;
+        if (side == Side.LEFT) {
+            if (lastSelectedSide == Side.RIGHT && rightList.getSelectedValue() != null) {
+                leftList.setSelectedValue(selected, true);
+                linkSelected(false);
+            } else {
+                leftList.setSelectedValue(selected, true);
+                rightList.clearSelection();
+                lastSelectedSide = Side.LEFT;
+            }
+        } else {
+            if (lastSelectedSide == Side.LEFT && leftList.getSelectedValue() != null) {
+                rightList.setSelectedValue(selected, true);
+                linkSelected(false);
+            } else {
+                rightList.setSelectedValue(selected, true);
+                leftList.clearSelection();
+                lastSelectedSide = Side.RIGHT;
+            }
+        }
+        updateSelectionState();
         repaintPanes();
     }
 
@@ -672,7 +686,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             MouseAdapter mouse = new MouseAdapter() {
                 @Override public void mousePressed(MouseEvent e) {
                     requestFocusInWindow();
-                    TrackEditor.ObjRef selected = selectAt(e.getX(), e.getY());
+                    TrackEditor.ObjRef selected = findAt(e.getX(), e.getY());
                     if (left && selected != null) draggingLeftRef = selected;
                     if (selected == null || SwingUtilities.isRightMouseButton(e) || e.isAltDown()) {
                         panStart = e.getPoint();
@@ -686,10 +700,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 }
 
                 @Override public void mouseClicked(MouseEvent e) {
-                    TrackEditor.ObjRef selected = selectAt(e.getX(), e.getY());
-                    if (!left && selected != null && e.getClickCount() >= 2 && leftList.getSelectedValue() != null) {
-                        linkSelected(false);
-                    }
+                    objectClicked(left ? Side.LEFT : Side.RIGHT, findAt(e.getX(), e.getY()));
                 }
 
                 @Override public void mouseExited(MouseEvent e) {
@@ -852,30 +863,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 ys[i] = p.y;
             }
             g2.drawPolygon(xs, ys, poly.npoints);
-        }
-
-        private TrackEditor.ObjRef selectAt(int x, int y) {
-            TrackEditor.ObjRef best = findAt(x, y);
-            if (best != null) {
-                if (left) {
-                    leftList.setSelectedValue(best, true);
-                    TrackEditor.ObjRef next = editor.nextObject(tree, best);
-                    if (next != null && next.obj.firstT() == currentT() + 1) {
-                        selectObject(rightList, rightModel, next.obj);
-                    } else {
-                        rightList.clearSelection();
-                    }
-                } else {
-                    rightList.setSelectedValue(best, true);
-                    TrackEditor.ObjRef prev = editor.previousObject(tree, best);
-                    if (prev != null && prev.obj.firstT() == currentT()) {
-                        selectObject(leftList, leftModel, prev.obj);
-                    } else {
-                        leftList.clearSelection();
-                    }
-                }
-            }
-            return best;
         }
 
         private TrackEditor.ObjRef findAt(int x, int y) {
@@ -1059,5 +1046,9 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             this.x = x;
             this.y = y;
         }
+    }
+
+    private enum Side {
+        LEFT, RIGHT
     }
 }
