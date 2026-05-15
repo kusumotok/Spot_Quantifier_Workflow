@@ -86,7 +86,8 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
     TimeSeriesTrackLinkerDialog(Window owner, ImagePlus image, Path tracksRoot, Runnable onSaved,
                                 Consumer<Path> openSeedEdit) throws IOException {
-        super(owner, "Track Linker", ModalityType.MODELESS);
+        // Keep the linker independent from the workflow window so Seed Edit can be brought in front normally.
+        super((Window) null, "Track Linker", ModalityType.MODELESS);
         setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
         this.image = image;
         this.tracksRoot = tracksRoot;
