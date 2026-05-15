@@ -158,6 +158,31 @@ public final class TimeSeriesMeasurementTab extends JPanel {
         return enabled.isEmpty() ? MeasurementColumn.allEnabled() : enabled;
     }
 
+    public boolean isSaveCsvSelected() {
+        return saveCsvCheck.isSelected();
+    }
+
+    public void setSaveCsvSelected(boolean selected) {
+        saveCsvCheck.setSelected(selected);
+    }
+
+    public boolean isShowTableSelected() {
+        return showTableCheck.isSelected();
+    }
+
+    public void setShowTableSelected(boolean selected) {
+        showTableCheck.setSelected(selected);
+    }
+
+    public void setSelectedColumns(Set<MeasurementColumn> columns) {
+        Set<MeasurementColumn> safe = columns == null || columns.isEmpty()
+            ? MeasurementColumn.allEnabled()
+            : columns;
+        for (Map.Entry<MeasurementColumn, JCheckBox> entry : columnChecks.entrySet()) {
+            entry.getValue().setSelected(safe.contains(entry.getKey()));
+        }
+    }
+
     public String selectedPresetLabel() {
         return "XYZ Object";
     }

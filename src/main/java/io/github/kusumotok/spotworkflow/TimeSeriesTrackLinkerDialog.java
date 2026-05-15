@@ -17,6 +17,8 @@ import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.awt.event.MouseMotionAdapter;
 import java.awt.event.MouseWheelEvent;
+import java.awt.event.WindowAdapter;
+import java.awt.event.WindowEvent;
 import java.awt.image.BufferedImage;
 import java.awt.image.IndexColorModel;
 import java.io.IOException;
@@ -58,8 +60,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private final JCheckBox showTrajectories = new JCheckBox("Trajectories", true);
     private final JCheckBox showLabels = new JCheckBox("Labels", true);
     private final JCheckBox showAllLinks = new JCheckBox("All T/T+1 links", false);
-    private final JButton linkButton = new JButton("Link");
-    private final JButton replaceButton = new JButton("Replace");
     private final JButton unlinkButton = new JButton("Unlink selected");
     private final JButton clearSelectionButton = new JButton("Clear selection");
     private final JButton saveButton = new JButton("Save Tracking");
@@ -83,12 +83,13 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private double viewScale = 0.0;
     private double viewOffsetX = 0.0;
     private double viewOffsetY = 0.0;
+    private boolean dirty;
 
     TimeSeriesTrackLinkerDialog(Window owner, ImagePlus image, Path tracksRoot, Runnable onSaved,
                                 Consumer<Path> openSeedEdit) throws IOException {
         // Keep the linker independent from the workflow window so Seed Edit can be brought in front normally.
         super((Window) null, "Track Linker", ModalityType.MODELESS);
-        setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
         this.image = image;
         this.tracksRoot = tracksRoot;
         this.onSaved = onSaved;
@@ -106,6 +107,11 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         rebuildTrajectoryCache();
         buildUi();
         installListeners();
+        addWindowListener(new WindowAdapter() {
+            @Override public void windowClosing(WindowEvent e) {
+                closeWithUnsavedCheck();
+            }
+        });
         Toolkit.getDefaultToolkit().addAWTEventListener(dragReleaseListener, AWTEvent.MOUSE_EVENT_MASK);
         reloadPair();
         pack();
@@ -125,6 +131,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             rebuildTrajectoryCache();
             frameCache.clear();
             reloadPair();
+            dirty = false;
             status.setText("Reloaded tracking from disk.");
         } catch (IOException e) {
             status.setText("Reload failed: " + e.getMessage());
@@ -182,9 +189,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         JButton openSeedEdit = new JButton("Open Seed Edit");
         openSeedEdit.addActionListener(e -> openSelectedInSeedEdit());
         JButton close = new JButton("Close");
-        close.addActionListener(e -> dispose());
-        actions.add(linkButton);
-        actions.add(replaceButton);
+        close.addActionListener(e -> closeWithUnsavedCheck());
         actions.add(unlinkButton);
         actions.add(clearSelectionButton);
         actions.add(openSeedEdit);
@@ -237,8 +242,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         cSync.addActionListener(e -> updateModeControls());
         leftList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) selectionChanged(); });
         rightList.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) selectionChanged(); });
-        linkButton.addActionListener(e -> linkSelected(false));
-        replaceButton.addActionListener(e -> linkSelected(true));
         unlinkButton.addActionListener(e -> unlinkSelected());
         clearSelectionButton.addActionListener(e -> clearSelection());
         saveButton.addActionListener(e -> save());
@@ -292,14 +295,12 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         TrackEditor.ObjRef left = leftList.getSelectedValue();
         TrackEditor.ObjRef right = rightList.getSelectedValue();
         boolean both = left != null && right != null;
-        linkButton.setEnabled(both);
-        replaceButton.setEnabled(both);
         unlinkButton.setEnabled(both && left.parent == right.parent);
         selectionStatus.setText("Selected: T" + currentT() + " "
             + (left != null ? objLabel(left) : "none")
             + "  ->  T" + (currentT() + 1) + " "
             + (right != null ? objLabel(right) : "none")
-            + "    Drag left obj to right obj, or click both and Link.  Ctrl+wheel=zoom, drag empty image=pan.");
+            + "    Click one object on each side or drag left to right to link/replace.  Ctrl+wheel=zoom, drag empty image=pan.");
     }
 
     private void linkSelected(boolean forceReplace) {
@@ -317,6 +318,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         }
         editor.linkAfter(left, right);
         editor.pruneEmptyTracks(tree);
+        dirty = true;
         rebuildTrajectoryCache();
         reloadPair();
         selectObject(leftList, leftModel, left.obj);
@@ -344,6 +346,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         }
         editor.unlinkToNewTrack(tree, right);
         editor.pruneEmptyTracks(tree);
+        dirty = true;
         rebuildTrajectoryCache();
         reloadPair();
         status.setText("Unlinked selected link: " + objLabel(left) + " -> " + objLabel(right) + ".");
@@ -375,12 +378,16 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     }
 
     private void save() {
+        saveTracking();
+    }
+
+    private boolean saveTracking() {
         TrackValidator.Result result = validator.validate(tree);
         if (!result.isValid()) {
             status.setText("Cannot save: " + result.getErrors().get(0));
             JOptionPane.showMessageDialog(this, String.join("\n", result.getErrors()),
                 "Tracking validation", JOptionPane.ERROR_MESSAGE);
-            return;
+            return false;
         }
         try {
             io.write(tracksRoot, tree);
@@ -388,11 +395,33 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             rebuildTrajectoryCache();
             frameCache.clear();
             reloadPair();
+            dirty = false;
             if (onSaved != null) onSaved.run();
             status.setText("Saved Tracking: " + tracksRoot);
+            return true;
         } catch (IOException e) {
             status.setText("Save failed: " + e.getMessage());
+            return false;
         }
+    }
+
+    private void closeWithUnsavedCheck() {
+        if (!dirty) {
+            dispose();
+            return;
+        }
+        Object[] options = {"Save", "Discard", "Cancel"};
+        int choice = JOptionPane.showOptionDialog(this,
+            "Tracking links have unsaved changes. Save before closing?",
+            "Unsaved Tracking Changes",
+            JOptionPane.YES_NO_CANCEL_OPTION,
+            JOptionPane.WARNING_MESSAGE,
+            null,
+            options,
+            options[0]);
+        if (choice == JOptionPane.CLOSED_OPTION || choice == 2) return;
+        if (choice == 0 && !saveTracking()) return;
+        dispose();
     }
 
     private void showPreviewSettings(Component parent) {

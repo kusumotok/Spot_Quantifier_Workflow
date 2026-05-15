@@ -472,7 +472,11 @@ public final class WorkflowWindow extends JFrame {
             runSeedRoiFromCache(params, seedTab.getCurrentSeedRoiObjects(), project);
             return;
         }
-        runSeedRoi(image, params, project);
+        setStatus("Press Apply before Make / Update Seed ROI.");
+        JOptionPane.showMessageDialog(this,
+            "Make / Update Seed ROI saves the current preview cache, including manual include/exclude edits.\n"
+                + "Press Apply first, then run Make / Update Seed ROI.",
+            "Seed ROI", JOptionPane.INFORMATION_MESSAGE);
     }
 
     private void cmdMakeResultRoi() {
@@ -778,14 +782,17 @@ public final class WorkflowWindow extends JFrame {
     private void runMeasurement(Path resultFolder, Path resultRoot, SegmentationParams params) {
         openResultMeasureRoot();
         Path csvPath = SegmentationController.measurementCsvFor(resultFolder, resultRoot, params);
-        MeasurementRequest request = measurementTab.buildRequest(csvPath);
+        final MeasurementRequest request = measurementTab.buildRequest(csvPath);
 
         controller.setState(WorkflowController.State.MEASURING);
         setStatus("Measuring...");
 
-        new SwingWorker<MeasurementResult, Void>() {
+        new SwingWorker<MeasurementResult, String>() {
             @Override protected MeasurementResult doInBackground() {
-                return measureCtrl.measure(request);
+                return measureCtrl.measure(request.withProgress(msg -> publish(msg)));
+            }
+            @Override protected void process(List<String> chunks) {
+                if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
             }
             @Override protected void done() {
                 try {

@@ -57,6 +57,33 @@ public final class TimeSeriesSegmentationController {
         return seedRoot;
     }
 
+    public Path saveUntrackedSeedRois(Path projectFolder, SegmentationParams params,
+                                      List<List<Roi>> objectRois, Consumer<String> progress) throws Exception {
+        if (objectRois == null || objectRois.isEmpty()) {
+            throw new RuntimeException("No seed objects to save.");
+        }
+        Path seedRoot = projectFolder.resolve("seed_rois_untracked");
+        backupTimeSeriesOutputs(projectFolder, progress);
+        Files.createDirectories(seedRoot);
+        report(progress, "Saving cached untracked seed ROI...");
+        Map<Integer, List<List<Roi>>> byTime = new java.util.TreeMap<Integer, List<List<Roi>>>();
+        for (List<Roi> rois : objectRois) {
+            int t = firstTime(rois);
+            List<List<Roi>> timeObjects = byTime.get(t);
+            if (timeObjects == null) {
+                timeObjects = new ArrayList<List<Roi>>();
+                byTime.put(t, timeObjects);
+            }
+            timeObjects.add(rois);
+        }
+        for (Map.Entry<Integer, List<List<Roi>>> entry : byTime.entrySet()) {
+            roiSaveService.saveRoisToRoot(seedRoot.resolve(timeFolder(entry.getKey())),
+                entry.getValue(), params.saveMode, true);
+        }
+        paramWriter.update(projectFolder.resolve("parameters.txt"), params.toSeedParameterMap());
+        return seedRoot;
+    }
+
     public Path makeResultFromSeedTracks(ImagePlus image, SegmentationParams params, Path projectFolder,
                                          Consumer<String> progress) throws Exception {
         Path tracksRoot = projectFolder.resolve("seed_tracks");
@@ -157,6 +184,17 @@ public final class TimeSeriesSegmentationController {
         double vh = cal != null && cal.pixelHeight > 0 ? cal.pixelHeight : 1.0;
         double vd = cal != null && cal.pixelDepth  > 0 ? cal.pixelDepth  : 1.0;
         return vw * vh * vd;
+    }
+
+    private static int firstTime(List<Roi> rois) {
+        if (rois != null) {
+            for (Roi roi : rois) {
+                if (roi == null) continue;
+                int t = roi.getTPosition();
+                if (t > 0) return t;
+            }
+        }
+        return 1;
     }
 
     private static void report(Consumer<String> progress, String msg) {

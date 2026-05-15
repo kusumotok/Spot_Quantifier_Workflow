@@ -18,8 +18,8 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 public final class TrackTreeIo {
-    private static final Pattern TRACK_NAME = Pattern.compile("^([0-9.]+)__track__(.+)$");
-    private static final Pattern OBJ_NAME = Pattern.compile("^([0-9.]+)__obj__(.+)$");
+    private static final Pattern TRACK_NAME = Pattern.compile("^([0-9.]+)__track(?:__(.+))?$");
+    private static final Pattern OBJ_NAME = Pattern.compile("^([0-9.]+)__(?:obj__)?(.+)$");
 
     public TrackTree read(Path root) throws IOException {
         TrackTree tree = new TrackTree();
@@ -94,7 +94,8 @@ public final class TrackTreeIo {
         if (!Files.isDirectory(path)) return null;
         Matcher m = TRACK_NAME.matcher(path.getFileName().toString());
         if (!m.matches()) return null;
-        TrackTree.TrackNode track = new TrackTree.TrackNode(m.group(1), m.group(2));
+        String displayName = m.group(2) != null ? m.group(2) : "";
+        TrackTree.TrackNode track = new TrackTree.TrackNode(m.group(1), displayName);
         track.setSourcePath(path);
         for (Path child : listChildren(path)) {
             TrackTree.TrackNode childTrack = readTrack(child);
@@ -141,15 +142,19 @@ public final class TrackTreeIo {
     }
 
     private static String trackName(TrackTree.TrackNode track) {
-        return track.getGlobalId() + "__track__" + safeName(track.getDisplayName());
+        String displayName = track.getDisplayName();
+        if (displayName == null || displayName.trim().isEmpty() || "track".equalsIgnoreCase(displayName.trim())) {
+            return track.getGlobalId() + "__track";
+        }
+        return track.getGlobalId() + "__track__" + safeName(displayName);
     }
 
     private static String objName(TrackTree.ObjNode obj) {
-        return obj.getGlobalId() + "__obj__" + safeName(obj.getSourceObjId());
+        return obj.getGlobalId() + "__" + safeName(obj.getSourceObjId());
     }
 
     private static String resultObjName(TrackTree.ObjNode obj) {
-        return obj.getGlobalId() + "__obj__result";
+        return obj.getGlobalId() + "__result";
     }
 
     public static String sourceObjId(int t, Path source) {

@@ -48,13 +48,12 @@ public final class TimeSeriesTrackController {
             int t = parseTimeFolder(timeRoot);
             report(progress, "Linking seed ROIs for T " + t + "...");
             List<ObjectInfo> currentObjects = readObjects(timeRoot, t);
-            Set<Integer> usedPrevious = new HashSet<>();
+            Map<ObjectInfo, ObjectInfo> links = computeAutoLinks(currentObjects, previousObjects, maxDistance);
             for (ObjectInfo current : currentObjects) {
-                ObjectInfo best = mutualNearestWithinLimit(current, currentObjects, previousObjects, usedPrevious, maxDistance);
+                ObjectInfo best = links.get(current);
                 TrackTree.TrackNode track;
                 if (best != null) {
                     track = best.track;
-                    usedPrevious.add(best.index);
                 } else {
                     track = new TrackTree.TrackNode(String.format("%03d", nextTrackId++), "track");
                     tree.addTrack(track);
@@ -216,6 +215,34 @@ public final class TimeSeriesTrackController {
         return n == 0 ? 1.0 : Math.max(1.0, sum / n);
     }
 
+    private static Map<ObjectInfo, ObjectInfo> computeAutoLinks(List<ObjectInfo> currentObjects,
+                                                               List<ObjectInfo> previousObjects,
+                                                               double maxLinkDistancePx) {
+        Map<ObjectInfo, ObjectInfo> out = new LinkedHashMap<ObjectInfo, ObjectInfo>();
+        if (currentObjects == null || previousObjects == null
+                || currentObjects.isEmpty() || previousObjects.isEmpty()) {
+            return out;
+        }
+        List<LinkCandidate> candidates = new ArrayList<LinkCandidate>();
+        for (ObjectInfo current : currentObjects) {
+            for (ObjectInfo previous : previousObjects) {
+                if (!withinAutoLinkLimit(current, previous, maxLinkDistancePx)) continue;
+                candidates.add(new LinkCandidate(current, previous,
+                        current.centroid.distance2(previous.centroid)));
+            }
+        }
+        candidates.sort(Comparator.comparingDouble(c -> c.distance2));
+        Set<ObjectInfo> usedCurrent = new HashSet<ObjectInfo>();
+        Set<ObjectInfo> usedPrevious = new HashSet<ObjectInfo>();
+        for (LinkCandidate candidate : candidates) {
+            if (usedCurrent.contains(candidate.current) || usedPrevious.contains(candidate.previous)) continue;
+            out.put(candidate.current, candidate.previous);
+            usedCurrent.add(candidate.current);
+            usedPrevious.add(candidate.previous);
+        }
+        return out;
+    }
+
     private static ObjectInfo mutualNearestWithinLimit(ObjectInfo current, List<ObjectInfo> currentObjects,
                                                        List<ObjectInfo> previous, Set<Integer> usedPrevious,
                                                        double maxLinkDistancePx) {
@@ -300,6 +327,18 @@ public final class TimeSeriesTrackController {
             this.rois = rois;
             this.centroid = centroid;
             this.radius = radius;
+        }
+    }
+
+    private static final class LinkCandidate {
+        final ObjectInfo current;
+        final ObjectInfo previous;
+        final double distance2;
+
+        LinkCandidate(ObjectInfo current, ObjectInfo previous, double distance2) {
+            this.current = current;
+            this.previous = previous;
+            this.distance2 = distance2;
         }
     }
 

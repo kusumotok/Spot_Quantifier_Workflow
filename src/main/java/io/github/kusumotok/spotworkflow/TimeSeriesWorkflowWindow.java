@@ -34,7 +34,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private final JSpinner channelSpinner = new JSpinner(new SpinnerNumberModel(1, 1, 1, 1));
     private final JComboBox<String> zprojCombo = new JComboBox<>();
     private final JButton zprojBtn = new JButton("Max Proj");
-    private final JTextField projectField = new JTextField();
+    private final JTextField projectField = new JTextField(18);
     private final JButton btnLoadProject = new JButton("Load Project...");
     private final JButton btnShowInFinder = new JButton("Show in Explorer");
     private final JLabel statusLabel = new JLabel("Ready.");
@@ -74,12 +74,9 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         setDefaultCloseOperation(WindowConstants.HIDE_ON_CLOSE);
         buildUI();
         seedRoiPanel.setDiskChangeListener(this::syncSeedTracksAfterSeedEdit);
+        loadPersistentSettings();
         pack();
-        setMinimumSize(new Dimension(480, 560));
-        Dimension screen = Toolkit.getDefaultToolkit().getScreenSize();
-        int width = Math.min(Math.max(getWidth(), 760), Math.max(520, screen.width - 80));
-        int height = Math.min(Math.max(getHeight(), 640), Math.max(560, screen.height - 120));
-        setSize(width, height);
+        setMinimumSize(new Dimension(480, 600));
         setLocationRelativeTo(null);
         refreshImageCombo();
         refreshZProjCombo();
@@ -107,6 +104,9 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         btnLoadProject.addActionListener(e -> cmdLoadProject());
         btnShowInFinder.addActionListener(e -> cmdShowInFinder());
         addWindowListener(new WindowAdapter() {
+            @Override public void windowClosing(WindowEvent e) {
+                savePersistentSettings();
+            }
             @Override public void windowClosed(WindowEvent e) {
                 if (targetImageListener != null) ImagePlus.removeImageListener(targetImageListener);
                 seedTab.onWindowClosing();
@@ -235,6 +235,62 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         areaTab.setExternalZProjTitle(zproj);
         syncSeedEditSubImage();
         syncTrackSubImage();
+    }
+
+    private void loadPersistentSettings() {
+        WorkflowPreferences prefs = WorkflowPreferences.loadWithPrefix(WorkflowPreferences.TIME_SERIES_PREFIX);
+        preferredChannel = Math.max(1, prefs.preferredChannel);
+        SpinnerNumberModel channelModel = (SpinnerNumberModel) channelSpinner.getModel();
+        channelSyncing = true;
+        channelModel.setMaximum(Math.max(1, preferredChannel));
+        channelSpinner.setValue(preferredChannel);
+        channelSyncing = false;
+        seedTab.setParams(prefs.params);
+        areaTab.setParams(prefs.params);
+        seedTab.setPreviewSettings(prefs.seedPreview);
+        areaTab.setPreviewSettings(prefs.areaPreview);
+        measurementTab.setSaveCsvSelected(prefs.measurementSaveCsv);
+        measurementTab.setShowTableSelected(prefs.measurementShowTable);
+        measurementTab.setSelectedColumns(prefs.measurementColumns);
+    }
+
+    private void savePersistentSettings() {
+        WorkflowPreferences prefs = new WorkflowPreferences();
+        SegmentationParams params = currentWorkflowParams();
+        prefs.preferredChannel = Math.max(1, preferredChannel);
+        prefs.params.seedThreshold = params.seedThreshold;
+        prefs.params.areaThreshold = params.areaThreshold;
+        prefs.params.areaEnabled = params.areaEnabled;
+        prefs.params.minVolUm3 = params.minVolUm3;
+        prefs.params.maxVolUm3 = params.maxVolUm3;
+        prefs.params.connectivity = params.connectivity;
+        prefs.params.fillHoles = params.fillHoles;
+        prefs.params.saveMode = params.saveMode;
+        prefs.params.resultFolderPattern = params.resultFolderPattern;
+        prefs.seedPreview.copyFrom(seedTab.getPreviewSettings());
+        prefs.areaPreview.copyFrom(areaTab.getPreviewSettings());
+        prefs.measurementSaveCsv = measurementTab.isSaveCsvSelected();
+        prefs.measurementShowTable = measurementTab.isShowTableSelected();
+        prefs.measurementColumns = measurementTab.getSelectedColumns();
+        prefs.saveWithPrefix(WorkflowPreferences.TIME_SERIES_PREFIX);
+    }
+
+    private SegmentationParams currentWorkflowParams() {
+        SegmentationParams seedParams = seedTab.getParams();
+        SegmentationParams areaParams = areaTab.getParams();
+        SegmentationParams params = new SegmentationParams();
+        params.seedThreshold = seedParams.seedThreshold;
+        params.areaThreshold = areaParams.areaThreshold;
+        params.areaEnabled = areaParams.areaEnabled;
+        params.minVolUm3 = seedParams.minVolUm3;
+        params.maxVolUm3 = seedParams.maxVolUm3;
+        params.connectivity = areaParams.connectivity;
+        params.fillHoles = areaParams.fillHoles;
+        params.areaConflictMode = areaParams.areaConflictMode;
+        params.channel = (Integer) channelSpinner.getValue();
+        params.saveMode = seedParams.saveMode;
+        params.resultFolderPattern = seedParams.resultFolderPattern;
+        return params;
     }
 
     private void syncSeedEditSubImage() {
@@ -404,9 +460,18 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         Path project = ensureProjectFolder();
         if (project == null) return;
         SegmentationParams params = seedTab.getParams();
+        if (!seedTab.hasCurrentSeedRoiCache()) {
+            setStatus("Press Apply before Make / Update Seed ROI.");
+            JOptionPane.showMessageDialog(this,
+                "Make / Update Seed ROI saves the current preview cache, including manual include/exclude edits.\n"
+                    + "Press Apply first, then run Make / Update Seed ROI.",
+                "Time Series Seed", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        final java.util.List<java.util.List<ij.gui.Roi>> objectRois = seedTab.getCurrentSeedRoiObjects();
         new SwingWorker<Path, String>() {
             @Override protected Path doInBackground() throws Exception {
-                return segmentationCtrl.makeUntrackedSeedRois(boundImage, params, project, this::publish);
+                return segmentationCtrl.saveUntrackedSeedRois(project, params, objectRois, this::publish);
             }
             @Override protected void process(List<String> chunks) {
                 if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
@@ -588,9 +653,12 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         Path csvPath = timeSeriesMeasurementCsv(projectFolder, resultRoot);
         setStatus("Measuring " + measurementTab.selectedPresetLabel() + ": " + resultRoot.getFileName());
         final MeasurementRequest request = measurementTab.buildRequest(csvPath);
-        new SwingWorker<MeasurementResult, Void>() {
+        new SwingWorker<MeasurementResult, String>() {
             @Override protected MeasurementResult doInBackground() {
-                return measureCtrl.measure(request);
+                return measureCtrl.measure(request.withProgress(msg -> publish(msg)));
+            }
+            @Override protected void process(List<String> chunks) {
+                if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
             }
             @Override protected void done() {
                 try {
@@ -656,9 +724,10 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         if (objectPath != null && objectPath.startsWith(seedRoot) && Files.exists(objectPath)) return objectPath;
         String name = objectPath != null && objectPath.getFileName() != null
             ? objectPath.getFileName().toString() : "";
-        int marker = name.indexOf("__obj__");
+        int marker = name.indexOf("__");
         if (marker < 0) return objectPath;
-        String sourceId = name.substring(marker + "__obj__".length());
+        String sourceId = name.substring(marker + "__".length());
+        if (sourceId.startsWith("obj__")) sourceId = sourceId.substring("obj__".length());
         int sep = sourceId.indexOf('_');
         if (sep <= 0 || sep >= sourceId.length() - 1) return objectPath;
         String time = sourceId.substring(0, sep);
