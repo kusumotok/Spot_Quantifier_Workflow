@@ -409,12 +409,15 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         actionRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         actionRow.add(applyCandidates);
         actionRow.add(clearCandidates);
-        actionRow.add(btnSeedEditManualInclude);
-        actionRow.add(exclude);
+        JPanel editRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        editRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        editRow.add(btnSeedEditManualInclude);
+        editRow.add(exclude);
         p.add(thresholdRow);
         p.add(noiseRow);
         p.add(colorRow);
         p.add(actionRow);
+        p.add(editRow);
         return p;
     }
 
@@ -450,9 +453,8 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
                     updateSeedEditPreviewNoiseRange();
                     rebuildSeedEditCandidatePreview();
                     seedEditHoverLabel = null;
-                    installSeedEditCandidatePickMode();
                     setStatus("Seed Edit candidates: " + seedEditCandidateRoisByLabel.size()
-                        + ". Click Manual Include target.");
+                        + ". Press Manual Include to pick a candidate.");
                 } catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
                     setStatus("Seed Edit threshold error: " + cause.getMessage());
