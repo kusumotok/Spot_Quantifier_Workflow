@@ -356,6 +356,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
         p.setBorder(BorderFactory.createTitledBorder("Seed Edit Manual Include / Exclude"));
         JButton applyCandidates = new JButton("Apply Threshold Candidates");
+        JButton clearCandidates = new JButton("Clear Threshold Candidates");
         JButton exclude = new JButton("Exclude Selected Object");
         seedEditThresholdSlider.setPaintTicks(false);
         seedEditThresholdField.setMaximumSize(seedEditThresholdField.getPreferredSize());
@@ -374,6 +375,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         });
         seedEditPreviewNoiseField.addActionListener(e -> commitSeedEditPreviewNoiseField());
         applyCandidates.addActionListener(e -> cmdSeedEditApplyThresholdCandidates());
+        clearCandidates.addActionListener(e -> clearSeedEditThresholdCandidates());
         btnSeedEditManualInclude.addActionListener(e -> installSeedEditCandidatePickMode());
         exclude.addActionListener(e -> cmdSeedEditManualExclude());
         btnSeedEditCandidateColor.addActionListener(e -> chooseSeedEditColor("Threshold candidate", true, false, false));
@@ -406,6 +408,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         actionRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         actionRow.add(applyCandidates);
+        actionRow.add(clearCandidates);
         actionRow.add(btnSeedEditManualInclude);
         actionRow.add(exclude);
         p.add(thresholdRow);
@@ -579,6 +582,16 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         if (seedEditHoverLabel == null) return;
         seedEditHoverLabel = null;
         seedRoiPanel.refreshOverlay();
+    }
+
+    private void clearSeedEditThresholdCandidates() {
+        seedEditAllCandidateRoisByLabel = Collections.emptyMap();
+        seedEditCandidateRoisByLabel = Collections.emptyMap();
+        seedEditCandidateVoxelCounts = Collections.emptyMap();
+        seedEditHoverLabel = null;
+        uninstallSeedEditCandidatePickMode();
+        seedRoiPanel.refreshOverlay();
+        setStatus("Cleared Seed Edit threshold candidates.");
     }
 
     private void decorateSeedEditCandidateOverlay(Overlay overlay, ImagePlus image, boolean subImage) {
