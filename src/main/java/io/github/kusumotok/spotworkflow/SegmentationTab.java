@@ -1350,6 +1350,14 @@ public final class SegmentationTab extends JPanel {
         if (changed) onThresholdParamsChanged();
     }
 
+    public int getThresholdRangeMin() {
+        return imgMin;
+    }
+
+    public int getThresholdRangeMax() {
+        return imgMax;
+    }
+
     public void setExternalSaveMode(SaveMode mode) {
         saveModeBox.setSelectedItem(mode);
     }

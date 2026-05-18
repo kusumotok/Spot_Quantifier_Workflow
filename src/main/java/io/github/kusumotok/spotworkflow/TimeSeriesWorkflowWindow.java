@@ -258,6 +258,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         String zproj = (String) zprojCombo.getSelectedItem();
         seedTab.setExternalChannel(ch);
         areaTab.setExternalChannel(ch);
+        updateSeedEditThresholdRangeFromTabs();
         seedTab.setExternalZProjTitle(zproj);
         areaTab.setExternalZProjTitle(zproj);
         syncSeedEditSubImage();
@@ -582,10 +583,22 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     }
 
     private void updateSeedEditThresholdRange(ImagePlus image) {
-        int max = image != null && image.getBitDepth() > 8 ? 65535 : 255;
-        seedEditThresholdSlider.setMinimum(0);
+        if (image == null) {
+            seedEditThresholdSlider.setMinimum(0);
+            seedEditThresholdSlider.setMaximum(1);
+            seedEditThresholdSlider.setValue(0);
+            seedEditThresholdField.setText("0");
+            return;
+        }
+        updateSeedEditThresholdRangeFromTabs();
+    }
+
+    private void updateSeedEditThresholdRangeFromTabs() {
+        int min = seedTab.getThresholdRangeMin();
+        int max = Math.max(min + 1, seedTab.getThresholdRangeMax());
+        seedEditThresholdSlider.setMinimum(min);
         seedEditThresholdSlider.setMaximum(max);
-        int value = Math.max(0, Math.min(seedTab.getParams().seedThreshold, max));
+        int value = Math.max(min, Math.min(seedTab.getParams().seedThreshold, max));
         seedEditThresholdSlider.setValue(value);
         seedEditThresholdField.setText(String.valueOf(value));
     }
