@@ -13,10 +13,27 @@ public final class TrackEditor {
     }
 
     public void linkAfter(ObjRef left, ObjRef right) {
+        linkAfter(null, left, right);
+    }
+
+    public void linkAfter(TrackTree tree, ObjRef left, ObjRef right) {
         if (left == null || right == null || left.obj == right.obj) return;
-        right.parent.removeChild(right.obj);
         int leftIndex = left.parent.mutableChildren().indexOf(left.obj);
-        left.parent.addChild(leftIndex + 1, right.obj);
+        int rightIndex = right.parent.mutableChildren().indexOf(right.obj);
+        if (leftIndex < 0 || rightIndex < 0) return;
+        if (left.parent == right.parent) {
+            // Already part of the same track. Adjacent links are a no-op; non-adjacent
+            // same-track edits are intentionally ignored as a fail-safe.
+            return;
+        }
+
+        TrackTree.TrackNode merged = new TrackTree.TrackNode("", "track");
+        moveRange(left.parent.mutableChildren(), 0, leftIndex + 1, merged);
+        moveRange(right.parent.mutableChildren(), rightIndex, right.parent.mutableChildren().size(), merged);
+        if (!merged.getChildren().isEmpty()) addRootTrack(tree, merged);
+
+        splitNonEmptyRemainderToRoot(tree, left.parent);
+        splitNonEmptyRemainderToRoot(tree, right.parent);
     }
 
     public ObjRef nextObject(TrackTree tree, ObjRef ref) {
@@ -39,10 +56,22 @@ public final class TrackEditor {
 
     public void unlinkToNewTrack(TrackTree tree, ObjRef ref) {
         if (tree == null || ref == null) return;
-        ref.parent.removeChild(ref.obj);
+        int index = ref.parent.mutableChildren().indexOf(ref.obj);
+        if (index < 0) return;
         TrackTree.TrackNode track = new TrackTree.TrackNode("", "track");
-        track.addChild(ref.obj);
-        tree.addTrack(track);
+        moveRange(ref.parent.mutableChildren(), index, ref.parent.mutableChildren().size(), track);
+        if (!track.getChildren().isEmpty()) tree.addTrack(track);
+    }
+
+    public boolean removeObjectAndSplit(TrackTree tree, TrackTree.TrackNode parent, TrackTree.ObjNode obj) {
+        if (tree == null || parent == null || obj == null) return false;
+        int index = parent.mutableChildren().indexOf(obj);
+        if (index < 0) return false;
+        parent.mutableChildren().remove(index);
+        TrackTree.TrackNode suffix = new TrackTree.TrackNode("", "track");
+        moveRange(parent.mutableChildren(), index, parent.mutableChildren().size(), suffix);
+        if (!suffix.getChildren().isEmpty()) tree.addTrack(suffix);
+        return true;
     }
 
     public void pruneEmptyTracks(TrackTree tree) {
@@ -78,6 +107,27 @@ public final class TrackEditor {
                 collect((TrackTree.TrackNode) child, t, out);
             }
         }
+    }
+
+    private static void moveRange(List<TrackTree.Entry> source, int fromInclusive, int toExclusive,
+                                  TrackTree.TrackNode target) {
+        int from = Math.max(0, fromInclusive);
+        int to = Math.max(from, Math.min(toExclusive, source.size()));
+        List<TrackTree.Entry> moving = new ArrayList<TrackTree.Entry>(source.subList(from, to));
+        source.subList(from, to).clear();
+        for (TrackTree.Entry entry : moving) target.addChild(entry);
+    }
+
+    private static void addRootTrack(TrackTree tree, TrackTree.TrackNode track) {
+        if (tree != null) tree.addTrack(track);
+    }
+
+    private static void splitNonEmptyRemainderToRoot(TrackTree tree, TrackTree.TrackNode parent) {
+        if (tree == null || parent == null || parent.getChildren().isEmpty()) return;
+        if (tree.getTracks().contains(parent)) return;
+        TrackTree.TrackNode remainder = new TrackTree.TrackNode("", "track");
+        moveRange(parent.mutableChildren(), 0, parent.mutableChildren().size(), remainder);
+        if (!remainder.getChildren().isEmpty()) tree.addTrack(remainder);
     }
 
     public static final class ObjRef {

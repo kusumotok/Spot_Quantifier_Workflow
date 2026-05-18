@@ -6,6 +6,8 @@ import ij.ImageListener;
 import ij.WindowManager;
 import ij.plugin.Duplicator;
 import ij.plugin.ZProjector;
+import ij.gui.Roi;
+import ij.io.RoiEncoder;
 import ij.process.ImageProcessor;
 import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementRequest;
 import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementResult;
@@ -21,6 +23,7 @@ import java.awt.event.WindowEvent;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CancellationException;
@@ -308,8 +311,120 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     private JPanel buildRoiEditTab(RoiExplorerPanel panel) {
         JPanel p = new JPanel(new BorderLayout(0, 4));
         p.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
+        p.add(buildSeedEditManualPanel(), BorderLayout.NORTH);
         p.add(panel, BorderLayout.CENTER);
         return p;
+    }
+
+    private JPanel buildSeedEditManualPanel() {
+        JPanel p = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 2));
+        p.setBorder(BorderFactory.createTitledBorder("Seed Edit Manual Include / Exclude"));
+        JButton include = new JButton("Include Current ROI");
+        JButton exclude = new JButton("Exclude Selected Object");
+        include.setToolTipText("Save the current ImageJ selection as seed_rois_untracked/tXXX/manual_###.");
+        exclude.setToolTipText("Delete selected seed object folder(s) from seed_rois_untracked.");
+        include.addActionListener(e -> cmdSeedEditManualInclude());
+        exclude.addActionListener(e -> cmdSeedEditManualExclude());
+        p.add(include);
+        p.add(exclude);
+        return p;
+    }
+
+    private void cmdSeedEditManualInclude() {
+        if (projectFolder == null || boundImage == null) {
+            setStatus("Load a project and target image before manual include.");
+            return;
+        }
+        Roi roi = boundImage.getRoi();
+        if (roi == null) {
+            setStatus("Manual include needs an active ImageJ ROI selection.");
+            return;
+        }
+        try {
+            Path objectFolder = nextManualSeedObjectFolder(currentSeedTimeRoot());
+            Files.createDirectories(objectFolder);
+            Roi copy = (Roi) roi.clone();
+            int c = Math.max(1, boundImage.getC());
+            int z = Math.max(1, boundImage.getZ());
+            int t = currentTargetT();
+            if (boundImage.getNChannels() > 1 || boundImage.getNFrames() > 1) copy.setPosition(c, z, t);
+            else copy.setPosition(z);
+            new RoiEncoder(objectFolder.resolve("roi-001.roi").toString()).write(copy);
+            reloadSeedEditAfterManualChange();
+            setStatus("Manual seed included: " + objectFolder.getFileName());
+        } catch (Exception e) {
+            setStatus("Manual include error: " + e.getMessage());
+            JOptionPane.showMessageDialog(this, e.getMessage(), "Seed Edit Manual Include", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void cmdSeedEditManualExclude() {
+        if (projectFolder == null) {
+            setStatus("Load a project before manual exclude.");
+            return;
+        }
+        java.util.List<Path> selected = seedRoiPanel.getSelectedPaths();
+        if (selected.isEmpty()) {
+            setStatus("Select seed object folder(s) in Seed Edit first.");
+            return;
+        }
+        java.util.LinkedHashSet<Path> objectFolders = new java.util.LinkedHashSet<Path>();
+        for (Path path : selected) {
+            Path objectFolder = seedObjectFolderForPath(path);
+            if (objectFolder != null && Files.exists(objectFolder)) objectFolders.add(objectFolder);
+        }
+        if (objectFolders.isEmpty()) {
+            setStatus("Manual exclude needs seed object folder selection.");
+            return;
+        }
+        int answer = JOptionPane.showConfirmDialog(this,
+            "Exclude " + objectFolders.size() + " selected seed object(s)?",
+            "Seed Edit Manual Exclude", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (answer != JOptionPane.OK_OPTION) return;
+        try {
+            for (Path objectFolder : objectFolders) deleteTree(objectFolder);
+            reloadSeedEditAfterManualChange();
+            setStatus("Manual seed excluded: " + objectFolders.size() + " object(s).");
+        } catch (Exception e) {
+            setStatus("Manual exclude error: " + e.getMessage());
+            JOptionPane.showMessageDialog(this, e.getMessage(), "Seed Edit Manual Exclude", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private Path currentSeedTimeRoot() {
+        return projectFolder.resolve("seed_rois_untracked")
+            .resolve(String.format("t%03d", currentTargetT()));
+    }
+
+    private int currentTargetT() {
+        if (boundImage == null) return 1;
+        if (boundImage.isHyperStack() || boundImage.getNFrames() > 1) return Math.max(1, boundImage.getT());
+        return 1;
+    }
+
+    private static Path nextManualSeedObjectFolder(Path timeRoot) throws Exception {
+        Files.createDirectories(timeRoot);
+        for (int i = 1; i < 100000; i++) {
+            Path candidate = timeRoot.resolve(String.format("manual_%03d", i));
+            if (!Files.exists(candidate)) return candidate;
+        }
+        throw new IllegalStateException("No available manual seed object name.");
+    }
+
+    private Path seedObjectFolderForPath(Path path) {
+        if (projectFolder == null || path == null) return null;
+        Path root = projectFolder.resolve("seed_rois_untracked").toAbsolutePath().normalize();
+        Path p = path.toAbsolutePath().normalize();
+        if (!p.startsWith(root)) return null;
+        Path rel = root.relativize(p);
+        if (rel.getNameCount() < 2) return null;
+        return root.resolve(rel.getName(0)).resolve(rel.getName(1));
+    }
+
+    private void reloadSeedEditAfterManualChange() {
+        Path root = projectFolder.resolve("seed_rois_untracked");
+        openSeedRoiRoot(root);
+        syncSeedTracksAfterSeedEdit();
     }
 
     private JPanel buildFooter() {
@@ -533,20 +648,27 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             setStatus("Missing seed_tracks. Run Auto Track + Save first.");
             return;
         }
+        Path workingRoot = projectFolder.resolve("seed_tracks_working");
         if (linkerDialog != null && linkerDialog.isDisplayable()) {
-            if (tracksRoot.equals(linkerTracksRoot) && boundImage == linkerImage) {
+            if (workingRoot.equals(linkerTracksRoot) && boundImage == linkerImage) {
                 linkerDialog.focusLinker();
                 return;
             }
-            linkerDialog.dispose();
+            if (!linkerDialog.requestClose()) return;
             linkerDialog = null;
         }
         try {
-            linkerTracksRoot = tracksRoot;
+            prepareWorkingTrackRoot(tracksRoot, workingRoot);
+            linkerTracksRoot = workingRoot;
             linkerImage = boundImage;
-            linkerDialog = new TimeSeriesTrackLinkerDialog(this, boundImage, tracksRoot, () -> {
+            linkerDialog = new TimeSeriesTrackLinkerDialog(this, boundImage, workingRoot, () -> {
+                try {
+                    commitWorkingTrackRoot(workingRoot, tracksRoot);
+                } catch (Exception e) {
+                    throw new RuntimeException(e.getMessage(), e);
+                }
                 trackTab.setTracksRoot(tracksRoot);
-                setStatus("Tracking saved: " + tracksRoot);
+                setStatus("Tracking committed: " + tracksRoot);
             }, this::openSeedEditAtObject);
             linkerDialog.addWindowListener(new WindowAdapter() {
                 @Override public void windowClosed(WindowEvent e) {
@@ -564,14 +686,53 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         }
     }
 
+    private void prepareWorkingTrackRoot(Path source, Path working) throws Exception {
+        deleteTree(working);
+        copyDirectory(source, working);
+    }
+
+    private void commitWorkingTrackRoot(Path working, Path target) throws Exception {
+        if (!Files.isDirectory(working)) {
+            throw new IllegalArgumentException("Missing seed_tracks_working.");
+        }
+        deleteTree(target);
+        copyDirectory(working, target);
+    }
+
+    private static void copyDirectory(Path source, Path target) throws Exception {
+        Files.createDirectories(target);
+        try (java.util.stream.Stream<Path> stream = Files.walk(source)) {
+            for (Path path : (Iterable<Path>) stream::iterator) {
+                Path rel = source.relativize(path);
+                Path dst = target.resolve(rel);
+                if (Files.isDirectory(path)) Files.createDirectories(dst);
+                else Files.copy(path, dst, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+    }
+
+    private static void deleteTree(Path dir) throws Exception {
+        if (!Files.exists(dir)) return;
+        try (java.util.stream.Stream<Path> stream = Files.walk(dir)) {
+            java.util.List<Path> paths = new java.util.ArrayList<Path>();
+            stream.forEach(paths::add);
+            paths.sort(java.util.Comparator.reverseOrder());
+            for (Path path : paths) Files.deleteIfExists(path);
+        }
+    }
+
     private void syncSeedTracksAfterSeedEdit() {
         if (projectFolder == null || seedTrackSyncRunning) return;
-        Path tracksRoot = projectFolder.resolve("seed_tracks");
+        Path tracksRoot = linkerDialog != null && linkerDialog.isDisplayable() && linkerTracksRoot != null
+            ? linkerTracksRoot
+            : projectFolder.resolve("seed_tracks");
         if (!Files.isDirectory(tracksRoot)) return;
+        final boolean syncingWorking = tracksRoot.getFileName() != null
+            && "seed_tracks_working".equals(tracksRoot.getFileName().toString());
         seedTrackSyncRunning = true;
         new SwingWorker<Path, String>() {
             @Override protected Path doInBackground() throws Exception {
-                return trackCtrl.syncTracksWithUntrackedSeedRois(projectFolder, this::publish);
+                return trackCtrl.syncTracksWithUntrackedSeedRois(projectFolder, tracksRoot, this::publish);
             }
             @Override protected void process(List<String> chunks) {
                 if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
@@ -580,8 +741,8 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
                 seedTrackSyncRunning = false;
                 try {
                     Path root = get();
-                    trackTab.setTracksRoot(root);
-                    if (linkerDialog != null && linkerDialog.isDisplayable()) linkerDialog.reloadFromDisk();
+                    trackTab.setTracksRoot(syncingWorking ? projectFolder.resolve("seed_tracks") : root);
+                    if (linkerDialog != null && linkerDialog.isDisplayable()) linkerDialog.reloadFromDisk(syncingWorking);
                     setStatus("Seed Track synced from Seed Edit.");
                 } catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;

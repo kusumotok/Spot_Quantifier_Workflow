@@ -3,6 +3,7 @@ package io.github.kusumotok.spotworkflow;
 import ij.gui.Roi;
 import io.github.kusumotok.spotworkflow.tracking.TrackTree;
 import io.github.kusumotok.spotworkflow.tracking.TrackTreeIo;
+import io.github.kusumotok.spotworkflow.tracking.TrackEditor;
 import io.github.kusumotok.spotworkflow.tracking.TrackValidator;
 
 import java.io.IOException;
@@ -77,6 +78,12 @@ public final class TimeSeriesTrackController {
     public Path syncTracksWithUntrackedSeedRois(Path projectFolder, Consumer<String> progress) throws Exception {
         Path untrackedRoot = projectFolder.resolve("seed_rois_untracked");
         Path tracksRoot = projectFolder.resolve("seed_tracks");
+        return syncTracksWithUntrackedSeedRois(projectFolder, tracksRoot, progress);
+    }
+
+    public Path syncTracksWithUntrackedSeedRois(Path projectFolder, Path tracksRoot,
+                                                Consumer<String> progress) throws Exception {
+        Path untrackedRoot = projectFolder.resolve("seed_rois_untracked");
         if (!Files.isDirectory(untrackedRoot) || !Files.isDirectory(tracksRoot)) return tracksRoot;
 
         TrackTree tree = treeIo.read(tracksRoot);
@@ -84,7 +91,7 @@ public final class TimeSeriesTrackController {
         Map<String, ObjLocation> existing = new LinkedHashMap<String, ObjLocation>();
         collectObjLocations(tree, existing);
 
-        int removed = removeMissingObjects(tree, current.keySet());
+        int removed = removeMissingObjects(tree, current.keySet(), new TrackEditor());
         int updated = 0;
         int added = 0;
         for (Map.Entry<String, ObjectInfo> entry : current.entrySet()) {
@@ -136,27 +143,36 @@ public final class TimeSeriesTrackController {
         }
     }
 
-    private static int removeMissingObjects(TrackTree tree, Set<String> currentSourceIds) {
+    private static int removeMissingObjects(TrackTree tree, Set<String> currentSourceIds, TrackEditor editor) {
         int removed = 0;
-        for (TrackTree.TrackNode track : tree.getTracks()) removed += removeMissingObjects(track, currentSourceIds);
+        boolean changed;
+        do {
+            changed = false;
+            for (TrackTree.TrackNode track : new ArrayList<TrackTree.TrackNode>(tree.getTracks())) {
+                TrackTree.ObjNode missing = firstMissingObject(track, currentSourceIds);
+                if (missing != null) {
+                    if (editor.removeObjectAndSplit(tree, track, missing)) {
+                        removed++;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        } while (changed);
         return removed;
     }
 
-    private static int removeMissingObjects(TrackTree.TrackNode parent, Set<String> currentSourceIds) {
-        int removed = 0;
-        for (Iterator<TrackTree.Entry> it = parent.mutableChildren().iterator(); it.hasNext();) {
-            TrackTree.Entry child = it.next();
+    private static TrackTree.ObjNode firstMissingObject(TrackTree.TrackNode parent, Set<String> currentSourceIds) {
+        for (TrackTree.Entry child : parent.getChildren()) {
             if (child instanceof TrackTree.ObjNode) {
                 TrackTree.ObjNode obj = (TrackTree.ObjNode) child;
-                if (!currentSourceIds.contains(obj.getSourceObjId())) {
-                    it.remove();
-                    removed++;
-                }
+                if (!currentSourceIds.contains(obj.getSourceObjId())) return obj;
             } else if (child instanceof TrackTree.TrackNode) {
-                removed += removeMissingObjects((TrackTree.TrackNode) child, currentSourceIds);
+                TrackTree.ObjNode found = firstMissingObject((TrackTree.TrackNode) child, currentSourceIds);
+                if (found != null) return found;
             }
         }
-        return removed;
+        return null;
     }
 
     private static List<Path> listTimeRoots(Path root) throws IOException {

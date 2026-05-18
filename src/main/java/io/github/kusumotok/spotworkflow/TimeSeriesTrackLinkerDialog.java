@@ -60,9 +60,11 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private final JCheckBox showTrajectories = new JCheckBox("Trajectories", true);
     private final JCheckBox showLabels = new JCheckBox("Labels", true);
     private final JCheckBox showAllLinks = new JCheckBox("All T/T+1 links", false);
+    private final JRadioButton fixedColorMode = new JRadioButton("Element colors", true);
+    private final JRadioButton trackColorMode = new JRadioButton("Track colors");
     private final JButton unlinkButton = new JButton("Unlink selected");
     private final JButton clearSelectionButton = new JButton("Clear selection");
-    private final JButton saveButton = new JButton("Save Tracking");
+    private final JButton saveButton = new JButton("Commit Track Edits");
     private final JLabel selectionStatus = new JLabel(" ");
     private final JLabel status = new JLabel(" ");
 
@@ -84,6 +86,11 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private double viewOffsetX = 0.0;
     private double viewOffsetY = 0.0;
     private boolean dirty;
+    private Color centroidColor = new Color(255, 220, 0, 230);
+    private Color trajectoryColor = new Color(0, 190, 255, 135);
+    private Color outlineColor = new Color(220, 220, 220, 150);
+    private Color linkColor = new Color(0, 210, 255, 145);
+    private Color selectedLinkColor = new Color(255, 128, 0, 235);
 
     TimeSeriesTrackLinkerDialog(Window owner, ImagePlus image, Path tracksRoot, Runnable onSaved,
                                 Consumer<Path> openSeedEdit) throws IOException {
@@ -126,16 +133,24 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     }
 
     void reloadFromDisk() {
+        reloadFromDisk(false);
+    }
+
+    void reloadFromDisk(boolean markDirty) {
         try {
             tree = io.read(tracksRoot);
             rebuildTrajectoryCache();
             frameCache.clear();
             reloadPair();
-            dirty = false;
+            dirty = markDirty;
             status.setText("Reloaded tracking from disk.");
         } catch (IOException e) {
             status.setText("Reload failed: " + e.getMessage());
         }
+    }
+
+    boolean requestClose() {
+        return closeWithUnsavedCheck();
     }
 
     private void buildUi() {
@@ -310,13 +325,17 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             status.setText("Select one object on both sides.");
             return;
         }
+        if (left.parent == right.parent) {
+            status.setText("Already linked in the same track.");
+            return;
+        }
         if (!forceReplace && needsReplaceConfirmation(left, right)) {
             int choice = JOptionPane.showConfirmDialog(this,
                 "This edit replaces an existing adjacent link. Replace it?",
                 "Replace link", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
             if (choice != JOptionPane.OK_OPTION) return;
         }
-        editor.linkAfter(left, right);
+        editor.linkAfter(tree, left, right);
         editor.pruneEmptyTracks(tree);
         dirty = true;
         rebuildTrajectoryCache();
@@ -396,8 +415,16 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             frameCache.clear();
             reloadPair();
             dirty = false;
-            if (onSaved != null) onSaved.run();
-            status.setText("Saved Tracking: " + tracksRoot);
+            if (onSaved != null) {
+                try {
+                    onSaved.run();
+                } catch (RuntimeException e) {
+                    dirty = true;
+                    status.setText("Commit failed: " + e.getMessage());
+                    return false;
+                }
+            }
+            status.setText("Committed Tracking: " + tracksRoot);
             return true;
         } catch (IOException e) {
             status.setText("Save failed: " + e.getMessage());
@@ -405,10 +432,10 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         }
     }
 
-    private void closeWithUnsavedCheck() {
+    private boolean closeWithUnsavedCheck() {
         if (!dirty) {
             dispose();
-            return;
+            return true;
         }
         Object[] options = {"Save", "Discard", "Cancel"};
         int choice = JOptionPane.showOptionDialog(this,
@@ -419,9 +446,10 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             null,
             options,
             options[0]);
-        if (choice == JOptionPane.CLOSED_OPTION || choice == 2) return;
-        if (choice == 0 && !saveTracking()) return;
+        if (choice == JOptionPane.CLOSED_OPTION || choice == 2) return false;
+        if (choice == 0 && !saveTracking()) return false;
         dispose();
+        return true;
     }
 
     private void showPreviewSettings(Component parent) {
@@ -430,7 +458,41 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             cb.addActionListener(e -> repaintPanes());
             menu.add(cb);
         }
+        menu.addSeparator();
+        ButtonGroup colorMode = new ButtonGroup();
+        colorMode.add(fixedColorMode);
+        colorMode.add(trackColorMode);
+        fixedColorMode.addActionListener(e -> repaintPanes());
+        trackColorMode.addActionListener(e -> repaintPanes());
+        menu.add(fixedColorMode);
+        menu.add(trackColorMode);
+        menu.addSeparator();
+        menu.add(colorMenuItem("Centroid color...", () -> centroidColor,
+            c -> centroidColor = withAlpha(c, centroidColor.getAlpha())));
+        menu.add(colorMenuItem("Trajectory color...", () -> trajectoryColor,
+            c -> trajectoryColor = withAlpha(c, trajectoryColor.getAlpha())));
+        menu.add(colorMenuItem("Outline color...", () -> outlineColor,
+            c -> outlineColor = withAlpha(c, outlineColor.getAlpha())));
+        menu.add(colorMenuItem("Link color...", () -> linkColor,
+            c -> linkColor = withAlpha(c, linkColor.getAlpha())));
         menu.show(parent, 0, parent.getHeight());
+    }
+
+    private JMenuItem colorMenuItem(String label, java.util.function.Supplier<Color> getter,
+                                    java.util.function.Consumer<Color> setter) {
+        JMenuItem item = new JMenuItem(label);
+        item.addActionListener(e -> {
+            Color chosen = JColorChooser.showDialog(this, label, getter.get());
+            if (chosen != null) {
+                setter.accept(chosen);
+                repaintPanes();
+            }
+        });
+        return item;
+    }
+
+    private static Color withAlpha(Color color, int alpha) {
+        return new Color(color.getRed(), color.getGreen(), color.getBlue(), alpha);
     }
 
     private void resetView() {
@@ -521,7 +583,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 return Integer.compare(a.t, b.t);
             }
         });
-        if (points.size() >= 2) trajectories.add(new Trajectory(points));
+        if (points.size() >= 2) trajectories.add(new Trajectory(trackColorKey(track), points));
         for (TrackTree.Entry child : track.getChildren()) {
             if (child instanceof TrackTree.TrackNode) collectTrajectory((TrackTree.TrackNode) child);
         }
@@ -728,6 +790,27 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         return Math.max(0, Math.min(255, v));
     }
 
+    private Color colorForTrack(TrackTree.TrackNode track, int alpha) {
+        if (!trackColorMode.isSelected() || track == null) return null;
+        return colorForTrackId(trackColorKey(track), alpha);
+    }
+
+    private String trackColorKey(TrackTree.TrackNode track) {
+        if (track == null) return "";
+        String id = track.getGlobalId();
+        if (id == null || id.trim().isEmpty()) return "track@" + System.identityHashCode(track);
+        return id;
+    }
+
+    private Color colorForTrackId(String trackId, int alpha) {
+        if (!trackColorMode.isSelected()) return null;
+        String id = trackId != null ? trackId : "";
+        int hash = Math.abs(id.hashCode());
+        float hue = (float) ((hash * 0.618033988749895) % 1.0);
+        Color base = Color.getHSBColor(hue, 0.72f, 1.0f);
+        return new Color(base.getRed(), base.getGreen(), base.getBlue(), alpha);
+    }
+
     private final class LinkerImageArea extends JPanel {
         LinkerImageArea() {
             super(new GridLayout(1, 2, 8, 0));
@@ -745,7 +828,8 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             if (left == null || right == null) return;
             Point a = convertPoint(leftPane, leftPane.centroidPoint(left));
             Point b = convertPoint(rightPane, rightPane.centroidPoint(right));
-            paintLink(g2, a, b, new Color(255, 128, 0, 235), 2.6f);
+            Color color = trackColorMode.isSelected() ? colorForTrack(left.parent, 235) : selectedLinkColor;
+            paintLink(g2, a, b, color, 2.6f);
         }
 
         private void paintAllCurrentLinks(Graphics2D g2) {
@@ -759,7 +843,8 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 if (right == null) continue;
                 Point a = convertPoint(leftPane, leftPane.centroidPoint(left));
                 Point b = convertPoint(rightPane, rightPane.centroidPoint(right));
-                paintLink(g2, a, b, new Color(0, 210, 255, 145), 1.4f);
+                Color color = trackColorMode.isSelected() ? colorForTrack(left.parent, 145) : linkColor;
+                paintLink(g2, a, b, color, 1.4f);
             }
         }
 
@@ -879,10 +964,11 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 boolean hovered = ref == hoverRef;
                 boolean sameTrack = peer != null && peer.parent == ref.parent;
                 boolean selectedObj = ref == selected;
+                Color trackColor = colorForTrack(ref.parent, 180);
                 Color color = selectedObj ? Color.YELLOW
                     : hovered ? Color.ORANGE
                     : sameTrack ? new Color(0, 230, 120, 220)
-                    : new Color(220, 220, 220, 150);
+                    : (trackColor != null ? trackColor : outlineColor);
                 g2.setColor(color);
                 g2.setStroke(new BasicStroke(selectedObj || hovered ? 2.6f : 1.2f));
                 if (showRois.isSelected()) {
@@ -894,7 +980,12 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 Point p = toView(draw, ref.obj.centerX(), ref.obj.centerY());
                 if (showCentroids.isSelected()) {
                     int r = selectedObj || hovered ? 3 : 2;
+                    if (!selectedObj && !hovered && !sameTrack) {
+                        Color centroid = colorForTrack(ref.parent, 230);
+                        g2.setColor(centroid != null ? centroid : centroidColor);
+                    }
                     g2.fillOval(p.x - r, p.y - r, r * 2, r * 2);
+                    g2.setColor(color);
                 }
                 if (showLabels.isSelected()) {
                     g2.drawString(ref.obj.getGlobalId(), p.x + 6, p.y - 6);
@@ -904,9 +995,12 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
         private void paintTrajectories(Graphics2D g2, Rectangle draw) {
             if (!showTrajectories.isSelected()) return;
-            g2.setColor(new Color(0, 190, 255, 135));
             g2.setStroke(new BasicStroke(1.5f));
             for (Trajectory trajectory : trajectories) {
+                Color color = trackColorMode.isSelected()
+                    ? colorForTrackId(trajectory.trackId, 145)
+                    : trajectoryColor;
+                g2.setColor(color);
                 for (int i = 1; i < trajectory.points.size(); i++) {
                     TrajectoryPoint a = trajectory.points.get(i - 1);
                     TrajectoryPoint b = trajectory.points.get(i);
@@ -928,7 +1022,8 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             if (l == null || r == null) return;
             Point a = left ? centroidPoint(l) : SwingUtilities.convertPoint(leftPane, leftPane.centroidPoint(l), this);
             Point b = left ? SwingUtilities.convertPoint(rightPane, rightPane.centroidPoint(r), this) : centroidPoint(r);
-            paintLinkSegment(g2, a, b, new Color(255, 128, 0, 235), 2.6f);
+            Color color = trackColorMode.isSelected() ? colorForTrack(l.parent, 235) : selectedLinkColor;
+            paintLinkSegment(g2, a, b, color, 2.6f);
         }
 
         private void paintAllCurrentLinksInPane(Graphics2D g2) {
@@ -942,7 +1037,8 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 if (r == null) continue;
                 Point a = left ? centroidPoint(l) : SwingUtilities.convertPoint(leftPane, leftPane.centroidPoint(l), this);
                 Point b = left ? SwingUtilities.convertPoint(rightPane, rightPane.centroidPoint(r), this) : centroidPoint(r);
-                paintLinkSegment(g2, a, b, new Color(0, 210, 255, 145), 1.4f);
+                Color color = trackColorMode.isSelected() ? colorForTrack(l.parent, 145) : linkColor;
+                paintLinkSegment(g2, a, b, color, 1.4f);
             }
         }
 
@@ -1145,8 +1241,10 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     }
 
     private static final class Trajectory {
+        final String trackId;
         final java.util.List<TrajectoryPoint> points;
-        Trajectory(java.util.List<TrajectoryPoint> points) {
+        Trajectory(String trackId, java.util.List<TrajectoryPoint> points) {
+            this.trackId = trackId;
             this.points = points;
         }
     }
