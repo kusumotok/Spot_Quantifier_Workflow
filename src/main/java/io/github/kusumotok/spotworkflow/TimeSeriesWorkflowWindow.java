@@ -357,13 +357,11 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         p.setBorder(BorderFactory.createTitledBorder("Seed Edit Manual Include / Exclude"));
         JButton applyCandidates = new JButton("Apply Threshold Candidates");
         JButton clearCandidates = new JButton("Clear Threshold Candidates");
-        JButton exclude = new JButton("Exclude Selected Object");
         seedEditThresholdSlider.setPaintTicks(false);
         seedEditThresholdField.setMaximumSize(seedEditThresholdField.getPreferredSize());
         seedEditPreviewNoiseField.setMaximumSize(seedEditPreviewNoiseField.getPreferredSize());
-        applyCandidates.setToolTipText("Recompute threshold candidates for the current T.");
+        applyCandidates.setToolTipText("Recompute threshold candidates for all T frames.");
         btnSeedEditManualInclude.setToolTipText("Click a threshold candidate on the main image or Z-proj to add it as manual_###.");
-        exclude.setToolTipText("Delete selected seed object folder(s) from seed_rois_untracked.");
         seedEditThresholdSlider.addChangeListener(e -> {
             seedEditThresholdField.setText(String.valueOf(seedEditThresholdSlider.getValue()));
         });
@@ -377,7 +375,6 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         applyCandidates.addActionListener(e -> cmdSeedEditApplyThresholdCandidates());
         clearCandidates.addActionListener(e -> clearSeedEditThresholdCandidates());
         btnSeedEditManualInclude.addActionListener(e -> installSeedEditCandidatePickMode());
-        exclude.addActionListener(e -> cmdSeedEditManualExclude());
         btnSeedEditCandidateColor.addActionListener(e -> chooseSeedEditColor("Threshold candidate", true, false, false));
         btnSeedEditExistingColor.addActionListener(e -> chooseSeedEditColor("Existing seed", false, true, false));
         btnSeedEditHoverColor.addActionListener(e -> chooseSeedEditColor("Candidate hover", false, false, true));
@@ -412,7 +409,6 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         JPanel editRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
         editRow.setAlignmentX(Component.LEFT_ALIGNMENT);
         editRow.add(btnSeedEditManualInclude);
-        editRow.add(exclude);
         p.add(thresholdRow);
         p.add(noiseRow);
         p.add(colorRow);
@@ -428,21 +424,32 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         }
         int threshold = seedEditThresholdSlider.getValue();
         int channel = (Integer) channelSpinner.getValue();
-        int time = currentTargetT();
-        setStatus("Computing Seed Edit threshold candidates...");
+        int frames = Math.max(1, boundImage.getNFrames());
+        setStatus("Computing Seed Edit threshold candidates for all T...");
         new SwingWorker<SeedEditCandidateResult, Void>() {
             @Override protected SeedEditCandidateResult doInBackground() throws Exception {
-                ImagePlus channelTime = TimeSeriesSegmentationController.extractChannelTime(boundImage, channel, time);
-                try {
-                    SegmentationParams params = seedTab.getParams();
-                    params.seedThreshold = threshold;
-                    CcResult3D cc = SpotQuantifier3D.computeCCFromBlurred(channelTime, threshold, params.toQuantifierParams());
-                    Map<Integer, List<Roi>> rois = new RoiExporter3D().exportToRoiListsByLabel(cc.labelImage,
-                        seedEditCandidateColor, boundImage, channel, time);
-                    return new SeedEditCandidateResult(rois, cc.voxelCounts, calibrationVoxelVolume(boundImage));
-                } finally {
-                    channelTime.flush();
+                Map<Integer, List<Roi>> allRois = new LinkedHashMap<Integer, List<Roi>>();
+                Map<Integer, Long> allVoxelCounts = new LinkedHashMap<Integer, Long>();
+                SegmentationParams params = seedTab.getParams();
+                params.seedThreshold = threshold;
+                RoiExporter3D exporter = new RoiExporter3D();
+                for (int t = 1; t <= frames; t++) {
+                    ImagePlus channelTime = TimeSeriesSegmentationController.extractChannelTime(boundImage, channel, t);
+                    try {
+                        CcResult3D cc = SpotQuantifier3D.computeCCFromBlurred(channelTime, threshold, params.toQuantifierParams());
+                        Map<Integer, List<Roi>> rois = exporter.exportToRoiListsByLabel(cc.labelImage,
+                            seedEditCandidateColor, boundImage, channel, t);
+                        for (Map.Entry<Integer, List<Roi>> entry : rois.entrySet()) {
+                            int key = seedEditCandidateKey(t, entry.getKey());
+                            allRois.put(key, entry.getValue());
+                            Long voxels = cc.voxelCounts.get(entry.getKey());
+                            allVoxelCounts.put(key, voxels != null ? voxels : 0L);
+                        }
+                    } finally {
+                        channelTime.flush();
+                    }
                 }
+                return new SeedEditCandidateResult(allRois, allVoxelCounts, calibrationVoxelVolume(boundImage));
             }
             @Override protected void done() {
                 try {
@@ -454,7 +461,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
                     rebuildSeedEditCandidatePreview();
                     seedEditHoverLabel = null;
                     setStatus("Seed Edit candidates: " + seedEditCandidateRoisByLabel.size()
-                        + ". Press Manual Include to pick a candidate.");
+                        + " across " + frames + " T frames. Press Manual Include to pick a candidate.");
                 } catch (Exception e) {
                     Throwable cause = e.getCause() != null ? e.getCause() : e;
                     setStatus("Seed Edit threshold error: " + cause.getMessage());
@@ -474,7 +481,7 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
             return;
         }
         try {
-            Path objectFolder = nextManualSeedObjectFolder(currentSeedTimeRoot());
+            Path objectFolder = nextManualSeedObjectFolder(seedTimeRoot(candidateTime(rois)));
             Files.createDirectories(objectFolder);
             int index = 1;
             for (Roi roi : rois) {
@@ -490,9 +497,23 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         }
     }
 
+    private int candidateTime(List<Roi> rois) {
+        if (rois != null) {
+            for (Roi roi : rois) {
+                if (roi != null && roi.getTPosition() > 0) return roi.getTPosition();
+            }
+        }
+        return currentTargetT();
+    }
+
     private void installSeedEditCandidatePickMode() {
         if (seedEditCandidateRoisByLabel == null || seedEditCandidateRoisByLabel.isEmpty()) {
             setStatus("Apply threshold candidates before Manual Include.");
+            return;
+        }
+        if (seedEditCandidatePickListener != null) {
+            uninstallSeedEditCandidatePickMode();
+            setStatus("Manual include picking stopped.");
             return;
         }
         uninstallSeedEditCandidatePickMode();
@@ -806,6 +827,10 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         }
     }
 
+    private static int seedEditCandidateKey(int t, int label) {
+        return Math.max(1, t) * 1000000 + label;
+    }
+
     private static JButton colorButton(Color color, String tooltip) {
         JButton button = new JButton(" ");
         button.setPreferredSize(new Dimension(28, 18));
@@ -850,8 +875,12 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
     }
 
     private Path currentSeedTimeRoot() {
+        return seedTimeRoot(currentTargetT());
+    }
+
+    private Path seedTimeRoot(int t) {
         return projectFolder.resolve("seed_rois_untracked")
-            .resolve(String.format("t%03d", currentTargetT()));
+            .resolve(String.format("t%03d", Math.max(1, t)));
     }
 
     private int currentTargetT() {

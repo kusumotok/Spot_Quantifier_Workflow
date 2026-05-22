@@ -68,7 +68,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
     private final JLabel selectionStatus = new JLabel(" ");
     private final JLabel status = new JLabel(" ");
 
-    private final java.awt.event.AWTEventListener dragReleaseListener = this::handleGlobalMouseRelease;
     private final java.util.Map<String, BufferedImage> frameCache = new java.util.LinkedHashMap<String, BufferedImage>() {
         @Override protected boolean removeEldestEntry(java.util.Map.Entry<String, BufferedImage> eldest) {
             return size() > 6;
@@ -78,7 +77,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
     private TrackTree tree;
     private boolean updatingControls;
-    private TrackEditor.ObjRef draggingLeftRef;
     private TrackEditor.ObjRef lastClickedRef;
     private Side lastSelectedSide;
     private int lastPairT = 1;
@@ -119,7 +117,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 closeWithUnsavedCheck();
             }
         });
-        Toolkit.getDefaultToolkit().addAWTEventListener(dragReleaseListener, AWTEvent.MOUSE_EVENT_MASK);
         reloadPair();
         pack();
         setSize(Math.max(1120, getWidth()), Math.max(780, getHeight()));
@@ -315,7 +312,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             + (left != null ? objLabel(left) : "none")
             + "  ->  T" + (currentT() + 1) + " "
             + (right != null ? objLabel(right) : "none")
-            + "    Click one object on each side or drag left to right to link/replace.  Ctrl+wheel=zoom, drag empty image=pan.");
+            + "    Click one object on each side to link/replace.  Ctrl+wheel=zoom, drag image=pan.");
     }
 
     private void linkSelected(boolean forceReplace) {
@@ -600,26 +597,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
         }
     }
 
-    @Override public void dispose() {
-        Toolkit.getDefaultToolkit().removeAWTEventListener(dragReleaseListener);
-        super.dispose();
-    }
-
-    private void handleGlobalMouseRelease(AWTEvent event) {
-        if (!(event instanceof MouseEvent) || ((MouseEvent) event).getID() != MouseEvent.MOUSE_RELEASED) return;
-        if (draggingLeftRef == null) return;
-        MouseEvent mouse = (MouseEvent) event;
-        Point p = SwingUtilities.convertPoint((Component) mouse.getSource(), mouse.getPoint(), rightPane);
-        TrackEditor.ObjRef right = rightPane.findAt(p.x, p.y);
-        if (right != null) {
-            leftList.setSelectedValue(draggingLeftRef, true);
-            rightList.setSelectedValue(right, true);
-            linkSelected(false);
-        }
-        draggingLeftRef = null;
-        repaintPanes();
-    }
-
     private void objectClicked(Side side, TrackEditor.ObjRef selected) {
         if (selected == null) {
             clearSelection();
@@ -820,6 +797,14 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
         @Override protected void paintChildren(Graphics g) {
             super.paintChildren(g);
+            Graphics2D g2 = (Graphics2D) g.create();
+            try {
+                g2.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+                if (showAllLinks.isSelected()) paintAllCurrentLinks(g2);
+                paintSelectedInterPaneLink(g2);
+            } finally {
+                g2.dispose();
+            }
         }
 
         private void paintSelectedInterPaneLink(Graphics2D g2) {
@@ -885,13 +870,10 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             MouseAdapter mouse = new MouseAdapter() {
                 @Override public void mousePressed(MouseEvent e) {
                     requestFocusInWindow();
-                    TrackEditor.ObjRef selected = findAt(e.getX(), e.getY());
-                    if (left && selected != null) draggingLeftRef = selected;
-                    if (selected == null || SwingUtilities.isRightMouseButton(e) || e.isAltDown()) {
-                        panStart = e.getPoint();
-                        panStartX = viewOffsetX;
-                        panStartY = viewOffsetY;
-                    }
+                    ensureExplicitScaleForPan();
+                    panStart = e.getPoint();
+                    panStartX = viewOffsetX;
+                    panStartY = viewOffsetY;
                 }
 
                 @Override public void mouseReleased(MouseEvent e) {
@@ -904,7 +886,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
                 @Override public void mouseExited(MouseEvent e) {
                     hoverRef = null;
-                    repaint();
+                    repaintPanes();
                 }
             };
             addMouseListener(mouse);
@@ -912,7 +894,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 @Override public void mouseMoved(MouseEvent e) {
                     hoverRef = findAt(e.getX(), e.getY());
                     if (hoverRef != null) status.setText("Hover: " + objLabel(hoverRef));
-                    repaint();
+                    repaintPanes();
                 }
 
                 @Override public void mouseDragged(MouseEvent e) {
@@ -931,7 +913,7 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
             this.frame = frame;
             this.refs = refs != null ? refs : java.util.Collections.<TrackEditor.ObjRef>emptyList();
             this.zFilter = zFilter;
-            repaint();
+            repaintPanes();
         }
 
         @Override protected void paintComponent(Graphics g) {
@@ -943,7 +925,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                 if (frame != null) g2.drawImage(frame, draw.x, draw.y, draw.width, draw.height, null);
                 paintTrajectories(g2, draw);
                 paintObjects(g2, draw);
-                paintPaneLocalLinks(g2);
                 paintOverlayText(g2);
             } finally {
                 g2.dispose();
@@ -1009,52 +990,6 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
                     g2.drawLine(p1.x, p1.y, p2.x, p2.y);
                 }
             }
-        }
-
-        private void paintPaneLocalLinks(Graphics2D g2) {
-            if (showAllLinks.isSelected()) paintAllCurrentLinksInPane(g2);
-            paintSelectedLinkInPane(g2);
-        }
-
-        private void paintSelectedLinkInPane(Graphics2D g2) {
-            TrackEditor.ObjRef l = leftList.getSelectedValue();
-            TrackEditor.ObjRef r = rightList.getSelectedValue();
-            if (l == null || r == null) return;
-            Point a = left ? centroidPoint(l) : SwingUtilities.convertPoint(leftPane, leftPane.centroidPoint(l), this);
-            Point b = left ? SwingUtilities.convertPoint(rightPane, rightPane.centroidPoint(r), this) : centroidPoint(r);
-            Color color = trackColorMode.isSelected() ? colorForTrack(l.parent, 235) : selectedLinkColor;
-            paintLinkSegment(g2, a, b, color, 2.6f);
-        }
-
-        private void paintAllCurrentLinksInPane(Graphics2D g2) {
-            java.util.Map<TrackTree.ObjNode, TrackEditor.ObjRef> rights = new java.util.IdentityHashMap<TrackTree.ObjNode, TrackEditor.ObjRef>();
-            for (int i = 0; i < rightModel.size(); i++) rights.put(rightModel.get(i).obj, rightModel.get(i));
-            for (int i = 0; i < leftModel.size(); i++) {
-                TrackEditor.ObjRef l = leftModel.get(i);
-                TrackEditor.ObjRef next = editor.nextObject(tree, l);
-                if (next == null) continue;
-                TrackEditor.ObjRef r = rights.get(next.obj);
-                if (r == null) continue;
-                Point a = left ? centroidPoint(l) : SwingUtilities.convertPoint(leftPane, leftPane.centroidPoint(l), this);
-                Point b = left ? SwingUtilities.convertPoint(rightPane, rightPane.centroidPoint(r), this) : centroidPoint(r);
-                Color color = trackColorMode.isSelected() ? colorForTrack(l.parent, 145) : linkColor;
-                paintLinkSegment(g2, a, b, color, 1.4f);
-            }
-        }
-
-        private void paintLinkSegment(Graphics2D g2, Point a, Point b, Color color, float width) {
-            g2.setColor(color);
-            g2.setStroke(new BasicStroke(width));
-            g2.drawLine(a.x, a.y, b.x, b.y);
-            if (left) return;
-            double angle = Math.atan2(b.y - a.y, b.x - a.x);
-            int len = 9;
-            int x1 = b.x - (int) Math.round(Math.cos(angle - Math.PI / 7.0) * len);
-            int y1 = b.y - (int) Math.round(Math.sin(angle - Math.PI / 7.0) * len);
-            int x2 = b.x - (int) Math.round(Math.cos(angle + Math.PI / 7.0) * len);
-            int y2 = b.y - (int) Math.round(Math.sin(angle + Math.PI / 7.0) * len);
-            g2.drawLine(b.x, b.y, x1, y1);
-            g2.drawLine(b.x, b.y, x2, y2);
         }
 
         private void drawRoi(Graphics2D g2, Rectangle draw, Roi roi) {
@@ -1139,6 +1074,14 @@ final class TimeSeriesTrackLinkerDialog extends JDialog {
 
         private void zoomAtCenter(double factor) {
             zoomAt(new Point(getWidth() / 2, getHeight() / 2), factor);
+        }
+
+        private void ensureExplicitScaleForPan() {
+            if (viewScale > 0.0 || frame == null) return;
+            double s = fitScale();
+            viewScale = s;
+            viewOffsetX = (getWidth() - frame.getWidth() * s) / 2.0;
+            viewOffsetY = (getHeight() - frame.getHeight() * s) / 2.0;
         }
 
         private Point centroidPoint(TrackEditor.ObjRef ref) {
