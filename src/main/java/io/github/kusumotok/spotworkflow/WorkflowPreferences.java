@@ -19,6 +19,8 @@ final class WorkflowPreferences {
     final PreviewSettings areaPreview = new PreviewSettings();
     boolean measurementSaveCsv = true;
     boolean measurementShowTable = false;
+    boolean measurementTrackTableCsv = false;
+    String measurementTrackTableValue = "volume_cal3";
     Set<MeasurementColumn> measurementColumns = MeasurementColumn.allEnabled();
 
     static WorkflowPreferences load() {
@@ -41,6 +43,8 @@ final class WorkflowPreferences {
         prefs.areaPreview.load(rootPrefix, "areaPreview.");
         prefs.measurementSaveCsv = Prefs.get(key(rootPrefix, "measurement.saveCsv"), prefs.measurementSaveCsv);
         prefs.measurementShowTable = Prefs.get(key(rootPrefix, "measurement.showTable"), prefs.measurementShowTable);
+        prefs.measurementTrackTableCsv = Prefs.get(key(rootPrefix, "measurement.trackTableCsv"), prefs.measurementTrackTableCsv);
+        prefs.measurementTrackTableValue = Prefs.get(key(rootPrefix, "measurement.trackTableValue"), prefs.measurementTrackTableValue);
         prefs.measurementColumns = parseColumns(Prefs.get(key(rootPrefix, "measurement.columns"), ""));
         return prefs;
     }
@@ -64,6 +68,8 @@ final class WorkflowPreferences {
         areaPreview.save(rootPrefix, "areaPreview.");
         Prefs.set(key(rootPrefix, "measurement.saveCsv"), measurementSaveCsv);
         Prefs.set(key(rootPrefix, "measurement.showTable"), measurementShowTable);
+        Prefs.set(key(rootPrefix, "measurement.trackTableCsv"), measurementTrackTableCsv);
+        Prefs.set(key(rootPrefix, "measurement.trackTableValue"), measurementTrackTableValue != null ? measurementTrackTableValue : "volume_cal3");
         Prefs.set(key(rootPrefix, "measurement.columns"), formatColumns(measurementColumns));
         Prefs.savePreferences();
     }

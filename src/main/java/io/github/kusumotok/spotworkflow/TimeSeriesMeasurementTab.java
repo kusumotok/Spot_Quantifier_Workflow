@@ -23,6 +23,8 @@ public final class TimeSeriesMeasurementTab extends JPanel {
     private final JComboBox<ResultFolderItem> resultFolderCombo = new JComboBox<ResultFolderItem>();
     private final JCheckBox saveCsvCheck = new JCheckBox("Save CSV to result folder", true);
     private final JCheckBox showTableCheck = new JCheckBox("Show ResultsTable", false);
+    private final JCheckBox saveTrackTableCsvCheck = new JCheckBox("Save Track Table CSV", false);
+    private final JComboBox<TrackTableValue> trackTableValueCombo = new JComboBox<TrackTableValue>(TrackTableValue.values());
     private final Map<MeasurementColumn, JCheckBox> columnChecks = new LinkedHashMap<MeasurementColumn, JCheckBox>();
     private final TitledBorder columnsBorder =
         BorderFactory.createTitledBorder(BorderFactory.createEtchedBorder(), "Output columns (XYZ Object, leaf folders)");
@@ -58,8 +60,19 @@ public final class TimeSeriesMeasurementTab extends JPanel {
 
         saveCsvCheck.setAlignmentX(LEFT_ALIGNMENT);
         showTableCheck.setAlignmentX(LEFT_ALIGNMENT);
+        saveTrackTableCsvCheck.setAlignmentX(LEFT_ALIGNMENT);
         p.add(saveCsvCheck);
         p.add(showTableCheck);
+        p.add(saveTrackTableCsvCheck);
+
+        JPanel trackTableRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        trackTableRow.setAlignmentX(LEFT_ALIGNMENT);
+        trackTableRow.add(new JLabel("Track table value:"));
+        trackTableValueCombo.setPrototypeDisplayValue(TrackTableValue.INTEGRATED_INTENSITY);
+        trackTableRow.add(trackTableValueCombo);
+        p.add(trackTableRow);
+        saveTrackTableCsvCheck.addActionListener(e -> updateTrackTableControls());
+        updateTrackTableControls();
 
         JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 2));
         actionRow.setAlignmentX(LEFT_ALIGNMENT);
@@ -138,7 +151,7 @@ public final class TimeSeriesMeasurementTab extends JPanel {
     }
 
     public MeasurementRequest buildRequest(Path csvPath) {
-        Set<MeasurementColumn> enabled = getSelectedColumns();
+        Set<MeasurementColumn> enabled = getSelectedColumnsForRequest();
         MeasurementRequest request = MeasurementRequest
             .useProfile(new XyzObjectProfile(enabled))
             .withEnabledColumns(enabled)
@@ -146,7 +159,9 @@ public final class TimeSeriesMeasurementTab extends JPanel {
             .withMeasureAll(true)
             .withTargetMode(MeasurementTargetMode.LEAF_FOLDERS)
             .withCollectionMode(RoiCollectionMode.DIRECT);
-        if (saveCsvCheck.isSelected() && csvPath != null) request = request.withCsvOutput(csvPath);
+        if ((saveCsvCheck.isSelected() || saveTrackTableCsvCheck.isSelected()) && csvPath != null) {
+            request = request.withCsvOutput(csvPath);
+        }
         return request;
     }
 
@@ -156,6 +171,12 @@ public final class TimeSeriesMeasurementTab extends JPanel {
             if (entry.getValue().isSelected()) enabled.add(entry.getKey());
         }
         return enabled.isEmpty() ? MeasurementColumn.allEnabled() : enabled;
+    }
+
+    private Set<MeasurementColumn> getSelectedColumnsForRequest() {
+        Set<MeasurementColumn> enabled = EnumSet.copyOf(getSelectedColumns());
+        if (saveTrackTableCsvCheck.isSelected()) enabled.add(getSelectedTrackTableValue().requiredColumn);
+        return enabled;
     }
 
     public boolean isSaveCsvSelected() {
@@ -174,6 +195,29 @@ public final class TimeSeriesMeasurementTab extends JPanel {
         showTableCheck.setSelected(selected);
     }
 
+    public boolean isSaveTrackTableCsvSelected() {
+        return saveTrackTableCsvCheck.isSelected();
+    }
+
+    public void setSaveTrackTableCsvSelected(boolean selected) {
+        saveTrackTableCsvCheck.setSelected(selected);
+        updateTrackTableControls();
+    }
+
+    public TrackTableValue getSelectedTrackTableValue() {
+        Object item = trackTableValueCombo.getSelectedItem();
+        return item instanceof TrackTableValue ? (TrackTableValue) item : TrackTableValue.VOLUME_CAL3;
+    }
+
+    public void setSelectedTrackTableValue(String key) {
+        TrackTableValue value = TrackTableValue.fromKey(key);
+        trackTableValueCombo.setSelectedItem(value);
+    }
+
+    public String getSelectedTrackTableValueKey() {
+        return getSelectedTrackTableValue().key;
+    }
+
     public void setSelectedColumns(Set<MeasurementColumn> columns) {
         Set<MeasurementColumn> safe = columns == null || columns.isEmpty()
             ? MeasurementColumn.allEnabled()
@@ -185,6 +229,47 @@ public final class TimeSeriesMeasurementTab extends JPanel {
 
     public String selectedPresetLabel() {
         return "XYZ Object";
+    }
+
+    private void updateTrackTableControls() {
+        trackTableValueCombo.setEnabled(saveTrackTableCsvCheck.isSelected());
+    }
+
+    public enum TrackTableValue {
+        VOLUME_CAL3("volume_cal3", "volume (calibrated)", MeasurementColumn.VOLUME_CAL3),
+        VOLUME_VOX("volume_vox", "volume_vox", MeasurementColumn.VOLUME_VOX),
+        SURFACE_AREA("surface_area", "surface area", MeasurementColumn.SURFACE_AREA),
+        SPHERICITY("sphericity", "sphericity", MeasurementColumn.SPHERICITY),
+        INTEGRATED_INTENSITY("integrated_intensity", "integrated intensity", MeasurementColumn.INTEGRATED_INTENSITY),
+        MEAN_INTENSITY("mean_intensity", "mean intensity", MeasurementColumn.MEAN_INTENSITY),
+        MAX_INTENSITY("max_intensity", "max intensity", MeasurementColumn.MAX_INTENSITY),
+        CENTROID_X("centroid_x", "centroid x", MeasurementColumn.CENTROID),
+        CENTROID_Y("centroid_y", "centroid y", MeasurementColumn.CENTROID),
+        CENTROID_Z("centroid_z", "centroid z", MeasurementColumn.CENTROID),
+        MAX_FERET3D("max_feret3d", "max Feret 3D", MeasurementColumn.MAX_FERET3D);
+
+        public final String key;
+        public final String label;
+        public final MeasurementColumn requiredColumn;
+
+        TrackTableValue(String key, String label, MeasurementColumn requiredColumn) {
+            this.key = key;
+            this.label = label;
+            this.requiredColumn = requiredColumn;
+        }
+
+        @Override public String toString() {
+            return label;
+        }
+
+        static TrackTableValue fromKey(String key) {
+            if (key != null) {
+                for (TrackTableValue value : values()) {
+                    if (value.key.equals(key)) return value;
+                }
+            }
+            return VOLUME_CAL3;
+        }
     }
 
     private static final class ResultFolderItem {

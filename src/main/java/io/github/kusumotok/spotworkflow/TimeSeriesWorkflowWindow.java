@@ -289,6 +289,8 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         areaTab.setPreviewSettings(prefs.areaPreview);
         measurementTab.setSaveCsvSelected(prefs.measurementSaveCsv);
         measurementTab.setShowTableSelected(prefs.measurementShowTable);
+        measurementTab.setSaveTrackTableCsvSelected(prefs.measurementTrackTableCsv);
+        measurementTab.setSelectedTrackTableValue(prefs.measurementTrackTableValue);
         measurementTab.setSelectedColumns(prefs.measurementColumns);
     }
 
@@ -309,6 +311,8 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         prefs.areaPreview.copyFrom(areaTab.getPreviewSettings());
         prefs.measurementSaveCsv = measurementTab.isSaveCsvSelected();
         prefs.measurementShowTable = measurementTab.isShowTableSelected();
+        prefs.measurementTrackTableCsv = measurementTab.isSaveTrackTableCsvSelected();
+        prefs.measurementTrackTableValue = measurementTab.getSelectedTrackTableValueKey();
         prefs.measurementColumns = measurementTab.getSelectedColumns();
         prefs.saveWithPrefix(WorkflowPreferences.TIME_SERIES_PREFIX);
     }
@@ -1306,21 +1310,37 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         Path csvPath = timeSeriesMeasurementCsv(projectFolder, resultRoot);
         setStatus("Measuring " + measurementTab.selectedPresetLabel() + ": " + resultRoot.getFileName());
         final MeasurementRequest request = measurementTab.buildRequest(csvPath);
-        new SwingWorker<MeasurementResult, String>() {
-            @Override protected MeasurementResult doInBackground() {
-                return measureCtrl.measure(request.withProgress(msg -> publish(msg)));
+        final boolean saveTrackTable = measurementTab.isSaveTrackTableCsvSelected();
+        final TimeSeriesMeasurementTab.TrackTableValue trackTableValue = measurementTab.getSelectedTrackTableValue();
+        final int frameCount = boundImage != null ? Math.max(1, boundImage.getNFrames()) : 1;
+        new SwingWorker<MeasurementRunResult, String>() {
+            @Override protected MeasurementRunResult doInBackground() throws Exception {
+                MeasurementResult result = measureCtrl.measure(request.withProgress(msg -> publish(msg)));
+                Path trackTablePath = null;
+                if (result.isPerformed() && saveTrackTable) {
+                    publish("Writing track table CSV: " + trackTableValue.key);
+                    trackTablePath = TrackTableCsvExporter.write(csvPath,
+                        timeSeriesTrackTableCsv(csvPath, trackTableValue), trackTableValue, frameCount);
+                }
+                return new MeasurementRunResult(result, trackTablePath);
             }
             @Override protected void process(List<String> chunks) {
                 if (!chunks.isEmpty()) setStatus(chunks.get(chunks.size() - 1));
             }
             @Override protected void done() {
                 try {
-                    MeasurementResult result = get();
-                    setStatus(result.isPerformed()
-                        ? "Saved " + csvPath.getFileName() + ". " + result.getMessage()
-                        : "Measurement skipped: " + result.getMessage());
+                    MeasurementRunResult run = get();
+                    MeasurementResult result = run.measurementResult;
+                    if (result.isPerformed()) {
+                        String saved = "Saved " + csvPath.getFileName();
+                        if (run.trackTablePath != null) saved += " and " + run.trackTablePath.getFileName();
+                        setStatus(saved + ". " + result.getMessage());
+                    } else {
+                        setStatus("Measurement skipped: " + result.getMessage());
+                    }
                 } catch (Exception e) {
-                    setStatus("Measurement error: " + e.getMessage());
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    setStatus("Measurement error: " + cause.getMessage());
                 }
             }
         }.execute();
@@ -1483,6 +1503,20 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
         return project.resolve("measurement_" + key + "_xyzt.csv");
     }
 
+    private static Path timeSeriesTrackTableCsv(Path measurementCsv, TimeSeriesMeasurementTab.TrackTableValue value) {
+        String file = measurementCsv.getFileName() != null ? measurementCsv.getFileName().toString() : "measurement_xyzt.csv";
+        String suffix = "_track-table_" + sanitizeFileToken(value.key) + ".csv";
+        String out = file.endsWith(".csv")
+            ? file.substring(0, file.length() - 4) + suffix
+            : file + suffix;
+        Path parent = measurementCsv.getParent();
+        return parent != null ? parent.resolve(out) : java.nio.file.Paths.get(out);
+    }
+
+    private static String sanitizeFileToken(String text) {
+        return text == null ? "value" : text.replaceAll("[^A-Za-z0-9._-]+", "_");
+    }
+
     private static int areaSortKey(Path root) {
         String name = root.getFileName() != null ? root.getFileName().toString() : "";
         if ("result_rois_area-disabled".equals(name)) return -1;
@@ -1521,5 +1555,15 @@ public final class TimeSeriesWorkflowWindow extends JFrame {
 
     private void setStatus(String text) {
         SwingUtilities.invokeLater(() -> statusLabel.setText(text));
+    }
+
+    private static final class MeasurementRunResult {
+        final MeasurementResult measurementResult;
+        final Path trackTablePath;
+
+        MeasurementRunResult(MeasurementResult measurementResult, Path trackTablePath) {
+            this.measurementResult = measurementResult;
+            this.trackTablePath = trackTablePath;
+        }
     }
 }
