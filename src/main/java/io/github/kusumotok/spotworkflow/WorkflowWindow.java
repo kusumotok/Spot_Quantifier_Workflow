@@ -4,11 +4,18 @@ import ij.IJ;
 import ij.ImageListener;
 import ij.ImagePlus;
 import ij.WindowManager;
+import ij.gui.ImageCanvas;
+import ij.gui.Overlay;
 import ij.gui.Roi;
+import ij.gui.ShapeRoi;
+import ij.io.RoiEncoder;
 import io.github.kusumotok.roiexplorer.OpenViewRegistry;
 import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementRequest;
 import io.github.kusumotok.roiexplorer.service.RoiExplorerFacade.MeasurementResult;
 import io.github.kusumotok.roiexplorer.ui.RoiExplorerPanel;
+import io.github.kusumotok.spotworkflow.core.alg.CcResult3D;
+import io.github.kusumotok.spotworkflow.core.alg.SpotQuantifier3D;
+import io.github.kusumotok.spotworkflow.core.roi.RoiExporter3D;
 import io.github.kusumotok.spotworkflow.core.roi.SeedRoiReader;
 import io.github.kusumotok.spotworkflow.save.ParameterFileReader;
 import io.github.kusumotok.spotworkflow.save.ResultFolderService;
@@ -16,12 +23,17 @@ import io.github.kusumotok.spotworkflow.save.SegmentationParams;
 
 import javax.swing.*;
 import java.awt.*;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CancellationException;
 
 public final class WorkflowWindow extends JFrame {
@@ -39,6 +51,28 @@ public final class WorkflowWindow extends JFrame {
     private final SegmentationTab        seedTab          = new SegmentationTab(SegmentationTab.Mode.SEED);
     private final SegmentationTab        segmentationTab  = new SegmentationTab(SegmentationTab.Mode.AREA_RESULT);
     private final MeasurementTab         measurementTab   = new MeasurementTab();
+    private final JSlider seedEditThresholdSlider = new JSlider(0, 65535, 1000);
+    private final JTextField seedEditThresholdField = new JTextField("1000", 6);
+    private final JCheckBox seedEditShowTinyCandidatesCheck = new JCheckBox("Show tiny candidates <", true);
+    private final JSlider seedEditPreviewNoiseSlider = new JSlider(0, 1000, 0);
+    private final JTextField seedEditPreviewNoiseField = new JTextField("0.0", 6);
+    private final JButton btnSeedEditManualInclude = new JButton("Manual Include");
+    private final JButton btnSeedEditManualExclude = new JButton("Manual Exclude Selected");
+    private final JButton btnSeedEditCandidateColor = colorButton(new Color(0, 255, 255, 180), "Threshold candidate color");
+    private final JButton btnSeedEditExistingColor = colorButton(new Color(255, 255, 0, 220), "Existing seed color");
+    private final JButton btnSeedEditHoverColor = colorButton(new Color(255, 128, 0, 230), "Candidate hover color");
+    private Color seedEditCandidateColor = new Color(0, 255, 255, 180);
+    private Color seedEditExistingColor = new Color(255, 255, 0, 220);
+    private Color seedEditHoverColor = new Color(255, 128, 0, 230);
+    private Map<Integer, List<Roi>> seedEditAllCandidateRoisByLabel = Collections.emptyMap();
+    private Map<Integer, List<Roi>> seedEditCandidateRoisByLabel = Collections.emptyMap();
+    private Map<Integer, Long> seedEditCandidateVoxelCounts = Collections.emptyMap();
+    private double seedEditCandidateVoxelVolume = 1.0;
+    private double seedEditPreviewMinVolume = 0.0;
+    private double seedEditPreviewMaxVolume = 1.0;
+    private Integer seedEditHoverLabel;
+    private MouseAdapter seedEditCandidatePickListener;
+    private final List<ImageCanvas> seedEditCandidatePickCanvases = new ArrayList<ImageCanvas>();
 
     // ── Image selector ────────────────────────────────────────────────────────
     private final JComboBox<String> imageCombo   = new JComboBox<>();
@@ -80,6 +114,8 @@ public final class WorkflowWindow extends JFrame {
         OpenViewRegistry.getInstance().unregister(resultMeasurePanel);
         setDefaultCloseOperation(JFrame.DISPOSE_ON_CLOSE);
         buildUI();
+        seedRoiPanel.setOverlayDecorator(this::decorateSeedEditCandidateOverlay);
+        seedRoiPanel.setRegularOverlayColorOverride(seedEditExistingColor);
         loadPersistentSettings();
         wireController();
         updateButtonStates();
@@ -213,7 +249,78 @@ public final class WorkflowWindow extends JFrame {
     private JPanel buildRoiEditTab(RoiExplorerPanel panel) {
         JPanel p = new JPanel(new BorderLayout(0, 4));
         p.setBorder(BorderFactory.createEmptyBorder(4, 4, 4, 4));
+        p.add(buildSeedEditManualPanel(), BorderLayout.NORTH);
         p.add(panel,  BorderLayout.CENTER);
+        return p;
+    }
+
+    private JPanel buildSeedEditManualPanel() {
+        JPanel p = new JPanel();
+        p.setLayout(new BoxLayout(p, BoxLayout.Y_AXIS));
+        p.setBorder(BorderFactory.createTitledBorder("Seed Edit Manual Include / Exclude"));
+        JButton applyCandidates = new JButton("Apply Threshold Candidates");
+        JButton clearCandidates = new JButton("Clear Threshold Candidates");
+        seedEditThresholdSlider.setPaintTicks(false);
+        seedEditThresholdField.setMaximumSize(seedEditThresholdField.getPreferredSize());
+        seedEditPreviewNoiseField.setMaximumSize(seedEditPreviewNoiseField.getPreferredSize());
+        applyCandidates.setToolTipText("Recompute threshold candidates for this image.");
+        btnSeedEditManualInclude.setToolTipText("Click a threshold candidate on the main image or Z-proj to add it as manual_###.");
+        btnSeedEditManualExclude.setToolTipText("Delete selected seed object folder(s) from Seed Edit.");
+
+        seedEditThresholdSlider.addChangeListener(e -> seedEditThresholdField.setText(String.valueOf(seedEditThresholdSlider.getValue())));
+        seedEditThresholdField.addActionListener(e -> commitSeedEditThresholdField());
+        seedEditShowTinyCandidatesCheck.addActionListener(e -> rebuildSeedEditCandidatePreview());
+        seedEditPreviewNoiseSlider.addChangeListener(e -> {
+            seedEditPreviewNoiseField.setText(formatVolume(seedEditNoiseSliderToVolume()));
+            if (!seedEditPreviewNoiseSlider.getValueIsAdjusting()) rebuildSeedEditCandidatePreview();
+        });
+        seedEditPreviewNoiseField.addActionListener(e -> commitSeedEditPreviewNoiseField());
+        applyCandidates.addActionListener(e -> cmdSeedEditApplyThresholdCandidates());
+        clearCandidates.addActionListener(e -> clearSeedEditThresholdCandidates());
+        btnSeedEditManualInclude.addActionListener(e -> installSeedEditCandidatePickMode());
+        btnSeedEditManualExclude.addActionListener(e -> cmdSeedEditManualExclude());
+        btnSeedEditCandidateColor.addActionListener(e -> chooseSeedEditColor("Threshold candidate", true, false, false));
+        btnSeedEditExistingColor.addActionListener(e -> chooseSeedEditColor("Existing seed", false, true, false));
+        btnSeedEditHoverColor.addActionListener(e -> chooseSeedEditColor("Candidate hover", false, false, true));
+
+        JPanel thresholdRow = new JPanel(new BorderLayout(6, 0));
+        thresholdRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JPanel labelRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        labelRow.add(new JLabel("Seed threshold:"));
+        labelRow.add(seedEditThresholdField);
+        thresholdRow.add(labelRow, BorderLayout.WEST);
+        thresholdRow.add(seedEditThresholdSlider, BorderLayout.CENTER);
+
+        JPanel noiseRow = new JPanel(new BorderLayout(6, 0));
+        noiseRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        noiseRow.add(seedEditShowTinyCandidatesCheck, BorderLayout.WEST);
+        noiseRow.add(seedEditPreviewNoiseSlider, BorderLayout.CENTER);
+        noiseRow.add(seedEditPreviewNoiseField, BorderLayout.EAST);
+
+        JPanel colorRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        colorRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        colorRow.add(new JLabel("Candidate:"));
+        colorRow.add(btnSeedEditCandidateColor);
+        colorRow.add(new JLabel("Existing seed:"));
+        colorRow.add(btnSeedEditExistingColor);
+        colorRow.add(new JLabel("Hover:"));
+        colorRow.add(btnSeedEditHoverColor);
+
+        JPanel actionRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        actionRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        actionRow.add(applyCandidates);
+        actionRow.add(clearCandidates);
+
+        JPanel editRow = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+        editRow.setAlignmentX(Component.LEFT_ALIGNMENT);
+        editRow.add(btnSeedEditManualInclude);
+        editRow.add(btnSeedEditManualExclude);
+
+        p.add(thresholdRow);
+        p.add(noiseRow);
+        p.add(colorRow);
+        p.add(actionRow);
+        p.add(editRow);
         return p;
     }
 
@@ -239,6 +346,7 @@ public final class WorkflowWindow extends JFrame {
                 savePersistentSettings();
                 seedTab.onWindowClosing();          // free cache + remove ImageListener
                 segmentationTab.onWindowClosing();  // free cache + remove ImageListener
+                uninstallSeedEditCandidatePickMode();
                 seedRoiPanel.cleanupPreview();
                 seedRoiPanel.onWindowClosing();
                 resultMeasurePanel.cleanupPreview();
@@ -368,6 +476,7 @@ public final class WorkflowWindow extends JFrame {
         String zproj = (String) zprojCombo.getSelectedItem();
         seedTab.setExternalChannel(ch);
         segmentationTab.setExternalChannel(ch);
+        updateSeedEditThresholdRangeFromTabs();
         seedTab.setExternalZProjTitle(zproj);
         segmentationTab.setExternalZProjTitle(zproj);
         syncSeedEditSubImage();
@@ -602,6 +711,7 @@ public final class WorkflowWindow extends JFrame {
     }
 
     private void clearProjectForTargetChange() {
+        clearSeedEditThresholdCandidates();
         seedTab.clearPreview();
         segmentationTab.clearPreview();
         seedRoiPanel.closeFolder();
@@ -654,6 +764,13 @@ public final class WorkflowWindow extends JFrame {
         }
     }
 
+    private void reloadSeedEditAfterManualChange() {
+        openSeedRoiRoot();
+        seedRoiPanel.refreshOverlay();
+        refreshMeasurementResultFolders();
+        updateButtonStates();
+    }
+
     private void openResultMeasureRoot() {
         Path resultRoot = controller.getSession().getResultRoiRoot();
         ImagePlus image = controller.getSession().getBoundImage();
@@ -665,6 +782,457 @@ public final class WorkflowWindow extends JFrame {
                 syncResultMeasureSubImage();
             }
             resultMeasurePanel.openFolder(resultRoot);
+        }
+    }
+
+    private void cmdSeedEditApplyThresholdCandidates() {
+        ImagePlus image = controller.getSession().getBoundImage();
+        if (controller.getSession().getProjectFolder() == null || image == null) {
+            setStatus("Load a project and target image before Seed Edit threshold preview.");
+            return;
+        }
+        int threshold = seedEditThresholdSlider.getValue();
+        int channel = (Integer) channelSpinner.getValue();
+        setStatus("Computing Seed Edit threshold candidates...");
+        new SwingWorker<SeedEditCandidateResult, Void>() {
+            @Override protected SeedEditCandidateResult doInBackground() throws Exception {
+                SegmentationParams params = seedTab.getParams();
+                params.seedThreshold = threshold;
+                ImagePlus channelImage = extractChannel(image, channel);
+                try {
+                    CcResult3D cc = SpotQuantifier3D.computeCCFromBlurred(channelImage, threshold, params.toQuantifierParams());
+                    RoiExporter3D exporter = new RoiExporter3D();
+                    Map<Integer, List<Roi>> rois = exporter.exportToRoiListsByLabel(
+                        cc.labelImage, seedEditCandidateColor, image, channel);
+                    return new SeedEditCandidateResult(rois, cc.voxelCounts, calibrationVoxelVolume(image));
+                } finally {
+                    if (channelImage != image) channelImage.flush();
+                }
+            }
+            @Override protected void done() {
+                try {
+                    SeedEditCandidateResult result = get();
+                    seedEditAllCandidateRoisByLabel = result.roisByLabel;
+                    seedEditCandidateVoxelCounts = result.voxelCounts;
+                    seedEditCandidateVoxelVolume = result.voxelVolume;
+                    updateSeedEditPreviewNoiseRange();
+                    rebuildSeedEditCandidatePreview();
+                    seedEditHoverLabel = null;
+                    setStatus("Seed Edit candidates: " + seedEditCandidateRoisByLabel.size()
+                        + ". Press Manual Include to pick a candidate.");
+                } catch (Exception e) {
+                    Throwable cause = e.getCause() != null ? e.getCause() : e;
+                    setStatus("Seed Edit threshold error: " + cause.getMessage());
+                }
+            }
+        }.execute();
+    }
+
+    private void cmdSeedEditManualInclude(Integer label) {
+        Path project = controller.getSession().getProjectFolder();
+        if (project == null || controller.getSession().getBoundImage() == null) {
+            setStatus("Load a project and target image before manual include.");
+            return;
+        }
+        List<Roi> rois = seedEditCandidateRoisByLabel.get(label);
+        if (rois == null || rois.isEmpty()) {
+            setStatus("No threshold candidate selected.");
+            return;
+        }
+        try {
+            Path objectFolder = nextManualSeedObjectFolder(project.resolve("seed_rois"));
+            Files.createDirectories(objectFolder);
+            int index = 1;
+            for (Roi roi : rois) {
+                Roi copy = (Roi) roi.clone();
+                copy.setStrokeColor(seedEditExistingColor);
+                new RoiEncoder(objectFolder.resolve(String.format("roi-%03d.roi", index++)).toString()).write(copy);
+            }
+            reloadSeedEditAfterManualChange();
+            setStatus("Manual seed included: " + objectFolder.getFileName());
+        } catch (Exception e) {
+            setStatus("Manual include error: " + e.getMessage());
+            JOptionPane.showMessageDialog(this, e.getMessage(), "Seed Edit Manual Include", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void cmdSeedEditManualExclude() {
+        Path project = controller.getSession().getProjectFolder();
+        if (project == null) {
+            setStatus("Load a project before manual exclude.");
+            return;
+        }
+        java.util.List<Path> selected = seedRoiPanel.getSelectedPaths();
+        if (selected.isEmpty()) {
+            setStatus("Select seed object folder(s) in Seed Edit first.");
+            return;
+        }
+        java.util.LinkedHashSet<Path> objectFolders = new java.util.LinkedHashSet<Path>();
+        for (Path path : selected) {
+            Path objectFolder = seedObjectFolderForPath(path);
+            if (objectFolder != null && Files.exists(objectFolder)) objectFolders.add(objectFolder);
+        }
+        if (objectFolders.isEmpty()) {
+            setStatus("Manual exclude needs seed object folder selection.");
+            return;
+        }
+        int answer = JOptionPane.showConfirmDialog(this,
+            "Exclude " + objectFolders.size() + " selected seed object(s)?",
+            "Seed Edit Manual Exclude", JOptionPane.OK_CANCEL_OPTION, JOptionPane.WARNING_MESSAGE);
+        if (answer != JOptionPane.OK_OPTION) return;
+        try {
+            for (Path objectFolder : objectFolders) deleteTree(objectFolder);
+            reloadSeedEditAfterManualChange();
+            setStatus("Manual seed excluded: " + objectFolders.size() + " object(s).");
+        } catch (Exception e) {
+            setStatus("Manual exclude error: " + e.getMessage());
+            JOptionPane.showMessageDialog(this, e.getMessage(), "Seed Edit Manual Exclude", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    private void installSeedEditCandidatePickMode() {
+        if (seedEditCandidateRoisByLabel == null || seedEditCandidateRoisByLabel.isEmpty()) {
+            setStatus("Apply threshold candidates before Manual Include.");
+            return;
+        }
+        if (seedEditCandidatePickListener != null) {
+            uninstallSeedEditCandidatePickMode();
+            setStatus("Manual include picking stopped.");
+            return;
+        }
+        uninstallSeedEditCandidatePickMode();
+        seedEditCandidatePickListener = new MouseAdapter() {
+            @Override public void mouseMoved(MouseEvent e) { handleSeedEditCandidateMove(e); }
+            @Override public void mouseExited(MouseEvent e) { clearSeedEditCandidateHover(); }
+            @Override public void mouseClicked(MouseEvent e) { handleSeedEditCandidateClick(e); }
+        };
+        addSeedEditCandidateCanvas(controller.getSession().getBoundImage());
+        addSeedEditCandidateCanvas(currentZProjImage());
+        updateSeedEditManualIncludeButtonState();
+        setStatus("Manual include: click threshold candidate on image or Z-proj.");
+    }
+
+    private void addSeedEditCandidateCanvas(ImagePlus image) {
+        if (image == null || image.getCanvas() == null || seedEditCandidatePickListener == null) return;
+        ImageCanvas canvas = image.getCanvas();
+        if (seedEditCandidatePickCanvases.contains(canvas)) return;
+        canvas.addMouseMotionListener(seedEditCandidatePickListener);
+        canvas.addMouseListener(seedEditCandidatePickListener);
+        seedEditCandidatePickCanvases.add(canvas);
+    }
+
+    private void uninstallSeedEditCandidatePickMode() {
+        if (seedEditCandidatePickListener != null) {
+            for (ImageCanvas canvas : new ArrayList<ImageCanvas>(seedEditCandidatePickCanvases)) {
+                canvas.removeMouseMotionListener(seedEditCandidatePickListener);
+                canvas.removeMouseListener(seedEditCandidatePickListener);
+            }
+        }
+        seedEditCandidatePickCanvases.clear();
+        seedEditCandidatePickListener = null;
+        clearSeedEditCandidateHover();
+        updateSeedEditManualIncludeButtonState();
+    }
+
+    private void updateSeedEditManualIncludeButtonState() {
+        boolean picking = seedEditCandidatePickListener != null;
+        btnSeedEditManualInclude.setText(picking ? "Picking Include..." : "Manual Include");
+        btnSeedEditManualInclude.setBackground(picking ? new Color(255, 236, 179) : UIManager.getColor("Button.background"));
+        btnSeedEditManualInclude.setForeground(picking ? new Color(102, 60, 0) : UIManager.getColor("Button.foreground"));
+    }
+
+    private void handleSeedEditCandidateMove(MouseEvent e) {
+        Integer label = seedEditCandidateAt(e);
+        if (java.util.Objects.equals(seedEditHoverLabel, label)) return;
+        seedEditHoverLabel = label;
+        seedRoiPanel.refreshOverlay();
+    }
+
+    private void handleSeedEditCandidateClick(MouseEvent e) {
+        Integer label = seedEditCandidateAt(e);
+        if (label == null) {
+            setStatus("No threshold candidate at click.");
+            return;
+        }
+        cmdSeedEditManualInclude(label);
+        e.consume();
+    }
+
+    private Integer seedEditCandidateAt(MouseEvent e) {
+        ImagePlus image = controller.getSession().getBoundImage();
+        if (!(e.getSource() instanceof ImageCanvas) || image == null) return null;
+        ImageCanvas canvas = (ImageCanvas) e.getSource();
+        Point point = new Point(canvas.offScreenX(e.getX()), canvas.offScreenY(e.getY()));
+        boolean projection = currentZProjImage() != null && canvas == currentZProjImage().getCanvas();
+        int z = Math.max(1, image.getZ());
+        List<Integer> hits = new ArrayList<Integer>();
+        for (Map.Entry<Integer, List<Roi>> entry : seedEditCandidateRoisByLabel.entrySet()) {
+            for (Roi roi : entry.getValue()) {
+                int rz = roi.getZPosition() > 0 ? roi.getZPosition() : roi.getPosition();
+                if (!projection && rz > 0 && rz != z) continue;
+                if (roi.contains(point.x, point.y)) {
+                    hits.add(entry.getKey());
+                    break;
+                }
+            }
+        }
+        if (hits.isEmpty()) return null;
+        Collections.sort(hits);
+        return hits.get(0);
+    }
+
+    private void clearSeedEditCandidateHover() {
+        if (seedEditHoverLabel == null) return;
+        seedEditHoverLabel = null;
+        seedRoiPanel.refreshOverlay();
+    }
+
+    private void clearSeedEditThresholdCandidates() {
+        seedEditAllCandidateRoisByLabel = Collections.emptyMap();
+        seedEditCandidateRoisByLabel = Collections.emptyMap();
+        seedEditCandidateVoxelCounts = Collections.emptyMap();
+        seedEditHoverLabel = null;
+        uninstallSeedEditCandidatePickMode();
+        if (seedRoiPanel != null) seedRoiPanel.refreshOverlay();
+        setStatus("Cleared Seed Edit threshold candidates.");
+    }
+
+    private void decorateSeedEditCandidateOverlay(Overlay overlay, ImagePlus image, boolean subImage) {
+        if (overlay == null || image == null || seedEditCandidateRoisByLabel == null
+            || seedEditCandidateRoisByLabel.isEmpty()) return;
+        ImagePlus zproj = currentZProjImage();
+        boolean projection = zproj != null && image == zproj;
+        int z = Math.max(1, projection ? 1 : image.getZ());
+        for (Map.Entry<Integer, List<Roi>> entry : seedEditCandidateRoisByLabel.entrySet()) {
+            Color color = java.util.Objects.equals(seedEditHoverLabel, entry.getKey())
+                ? seedEditHoverColor : seedEditCandidateColor;
+            if (projection) {
+                Roi projected = mergeSeedEditCandidateForProjection(entry.getValue());
+                if (projected != null) {
+                    projected.setStrokeColor(color);
+                    projected.setPosition(Math.max(1, image.getCurrentSlice()));
+                    overlay.add(projected);
+                }
+                continue;
+            }
+            for (Roi roi : entry.getValue()) {
+                if (roi == null) continue;
+                int rz = roi.getZPosition() > 0 ? roi.getZPosition() : roi.getPosition();
+                if (rz > 0 && rz != z) continue;
+                Roi copy = (Roi) roi.clone();
+                copy.setFillColor(null);
+                copy.setStrokeColor(color);
+                overlay.add(copy);
+            }
+        }
+    }
+
+    private Roi mergeSeedEditCandidateForProjection(List<Roi> rois) {
+        ShapeRoi merged = null;
+        if (rois == null) return null;
+        for (Roi roi : rois) {
+            if (roi == null) continue;
+            Roi clone = (Roi) roi.clone();
+            clone.setPosition(0);
+            clone.setFillColor(null);
+            ShapeRoi sr = new ShapeRoi(clone);
+            merged = merged == null ? sr : merged.or(sr);
+        }
+        if (merged == null) return null;
+        merged.setFillColor(null);
+        merged.setPosition(0);
+        return merged;
+    }
+
+    private void commitSeedEditThresholdField() {
+        try {
+            int value = Integer.parseInt(seedEditThresholdField.getText().trim());
+            value = Math.max(seedEditThresholdSlider.getMinimum(), Math.min(value, seedEditThresholdSlider.getMaximum()));
+            seedEditThresholdSlider.setValue(value);
+            seedEditThresholdField.setText(String.valueOf(value));
+        } catch (NumberFormatException e) {
+            seedEditThresholdField.setText(String.valueOf(seedEditThresholdSlider.getValue()));
+        }
+    }
+
+    private void updateSeedEditThresholdRangeFromTabs() {
+        int min = seedTab.getThresholdRangeMin();
+        int max = Math.max(min + 1, seedTab.getThresholdRangeMax());
+        seedEditThresholdSlider.setMinimum(min);
+        seedEditThresholdSlider.setMaximum(max);
+        int value = Math.max(min, Math.min(seedTab.getParams().seedThreshold, max));
+        seedEditThresholdSlider.setValue(value);
+        seedEditThresholdField.setText(String.valueOf(value));
+    }
+
+    private void chooseSeedEditColor(String title, boolean candidate, boolean existing, boolean hover) {
+        Color current = candidate ? seedEditCandidateColor : existing ? seedEditExistingColor : seedEditHoverColor;
+        Color chosen = JColorChooser.showDialog(this, title + " color", current);
+        if (chosen == null) return;
+        Color withAlpha = new Color(chosen.getRed(), chosen.getGreen(), chosen.getBlue(), current.getAlpha());
+        if (candidate) {
+            seedEditCandidateColor = withAlpha;
+            btnSeedEditCandidateColor.setBackground(withAlpha);
+        } else if (existing) {
+            seedEditExistingColor = withAlpha;
+            btnSeedEditExistingColor.setBackground(withAlpha);
+            seedRoiPanel.setRegularOverlayColorOverride(withAlpha);
+        } else if (hover) {
+            seedEditHoverColor = withAlpha;
+            btnSeedEditHoverColor.setBackground(withAlpha);
+        }
+        seedRoiPanel.refreshOverlay();
+    }
+
+    private void rebuildSeedEditCandidatePreview() {
+        if (seedEditAllCandidateRoisByLabel == null || seedEditAllCandidateRoisByLabel.isEmpty()) {
+            seedEditCandidateRoisByLabel = Collections.emptyMap();
+            seedRoiPanel.refreshOverlay();
+            return;
+        }
+        Double min = seedEditShowTinyCandidatesCheck.isSelected() ? null : effectiveSeedEditNoiseMin();
+        Map<Integer, List<Roi>> visible = new LinkedHashMap<Integer, List<Roi>>();
+        int hidden = 0;
+        for (Map.Entry<Integer, List<Roi>> entry : seedEditAllCandidateRoisByLabel.entrySet()) {
+            Long voxels = seedEditCandidateVoxelCounts.get(entry.getKey());
+            double volume = (voxels != null ? voxels : 0L) * seedEditCandidateVoxelVolume;
+            if (min == null || volume >= min) {
+                visible.put(entry.getKey(), entry.getValue());
+            } else {
+                hidden++;
+            }
+        }
+        seedEditCandidateRoisByLabel = visible;
+        if (seedEditHoverLabel != null && !visible.containsKey(seedEditHoverLabel)) seedEditHoverLabel = null;
+        seedRoiPanel.refreshOverlay();
+        setStatus(visible.size() + " candidates visible" + (hidden > 0 ? ", " + hidden + " hidden" : ""));
+    }
+
+    private void updateSeedEditPreviewNoiseRange() {
+        double min = Double.POSITIVE_INFINITY;
+        double max = 0.0;
+        for (Long voxels : seedEditCandidateVoxelCounts.values()) {
+            double volume = (voxels != null ? voxels : 0L) * seedEditCandidateVoxelVolume;
+            if (volume > 0 && volume < min) min = volume;
+            if (volume > max) max = volume;
+        }
+        if (!Double.isFinite(min)) min = 0.0;
+        if (max <= min) max = min + 1.0;
+        seedEditPreviewMinVolume = Math.max(0.0, min);
+        seedEditPreviewMaxVolume = max;
+        seedEditPreviewNoiseSlider.setValue(seedEditVolumeToNoiseSlider(parseDoubleOrDefault(seedEditPreviewNoiseField.getText(), seedEditPreviewMinVolume)));
+        seedEditPreviewNoiseField.setText(formatVolume(seedEditNoiseSliderToVolume()));
+    }
+
+    private void commitSeedEditPreviewNoiseField() {
+        seedEditPreviewNoiseSlider.setValue(seedEditVolumeToNoiseSlider(parseDoubleOrDefault(seedEditPreviewNoiseField.getText(), seedEditPreviewMinVolume)));
+        seedEditPreviewNoiseField.setText(formatVolume(seedEditNoiseSliderToVolume()));
+        rebuildSeedEditCandidatePreview();
+    }
+
+    private Double effectiveSeedEditNoiseMin() {
+        double value = parseDoubleOrDefault(seedEditPreviewNoiseField.getText(), seedEditPreviewMinVolume);
+        if (value <= seedEditPreviewMinVolume * 1.0000001) return null;
+        return value;
+    }
+
+    private int seedEditVolumeToNoiseSlider(double volume) {
+        double min = Math.max(seedEditPreviewMinVolume, 1.0e-12);
+        double max = Math.max(min * 1.000001, seedEditPreviewMaxVolume);
+        double safe = Math.max(min, Math.min(max, volume));
+        double range = Math.log(max) - Math.log(min);
+        if (range <= 0) return 0;
+        return (int) Math.round(((Math.log(safe) - Math.log(min)) / range) * 1000.0);
+    }
+
+    private double seedEditNoiseSliderToVolume() {
+        double min = Math.max(seedEditPreviewMinVolume, 1.0e-12);
+        double max = Math.max(min * 1.000001, seedEditPreviewMaxVolume);
+        double t = Math.max(0.0, Math.min(1.0, seedEditPreviewNoiseSlider.getValue() / 1000.0));
+        if (t <= 0.0) return min;
+        if (t >= 1.0) return max;
+        return Math.exp(Math.log(min) + t * (Math.log(max) - Math.log(min)));
+    }
+
+    private static Path nextManualSeedObjectFolder(Path seedRoot) throws Exception {
+        Files.createDirectories(seedRoot);
+        for (int i = 1; i < 100000; i++) {
+            Path candidate = seedRoot.resolve(String.format("manual_%03d", i));
+            if (!Files.exists(candidate)) return candidate;
+        }
+        throw new IllegalStateException("No available manual seed object name.");
+    }
+
+    private Path seedObjectFolderForPath(Path path) {
+        Path project = controller.getSession().getProjectFolder();
+        if (project == null || path == null) return null;
+        Path root = project.resolve("seed_rois").toAbsolutePath().normalize();
+        Path p = path.toAbsolutePath().normalize();
+        if (!p.startsWith(root)) return null;
+        Path rel = root.relativize(p);
+        if (rel.getNameCount() < 1) return null;
+        return root.resolve(rel.getName(0));
+    }
+
+    private static ImagePlus extractChannel(ImagePlus image, int channel) {
+        if (image.getNChannels() <= 1) return image;
+        int safeC = Math.max(1, Math.min(channel, image.getNChannels()));
+        return new ij.plugin.Duplicator().run(image, safeC, safeC, 1, image.getNSlices(), 1, 1);
+    }
+
+    private static void deleteTree(Path dir) throws Exception {
+        if (!Files.exists(dir)) return;
+        try (java.util.stream.Stream<Path> stream = Files.walk(dir)) {
+            java.util.List<Path> paths = new java.util.ArrayList<Path>();
+            stream.forEach(paths::add);
+            paths.sort(java.util.Comparator.reverseOrder());
+            for (Path path : paths) Files.deleteIfExists(path);
+        }
+    }
+
+    private static double parseDoubleOrDefault(String text, double fallback) {
+        try {
+            return Double.parseDouble(text.trim());
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    private static String formatVolume(double value) {
+        if (value >= 100.0) return String.format(java.util.Locale.US, "%.0f", value);
+        if (value >= 10.0) return String.format(java.util.Locale.US, "%.1f", value);
+        return String.format(java.util.Locale.US, "%.3f", value);
+    }
+
+    private static double calibrationVoxelVolume(ImagePlus image) {
+        if (image == null || image.getCalibration() == null) return 1.0;
+        double x = image.getCalibration().pixelWidth > 0 ? image.getCalibration().pixelWidth : 1.0;
+        double y = image.getCalibration().pixelHeight > 0 ? image.getCalibration().pixelHeight : 1.0;
+        double z = image.getCalibration().pixelDepth > 0 ? image.getCalibration().pixelDepth : 1.0;
+        return x * y * z;
+    }
+
+    private static JButton colorButton(Color color, String tooltip) {
+        JButton button = new JButton(" ");
+        button.setPreferredSize(new Dimension(28, 18));
+        button.setMinimumSize(new Dimension(28, 18));
+        button.setBackground(color);
+        button.setToolTipText(tooltip);
+        button.setFocusable(false);
+        return button;
+    }
+
+    private static final class SeedEditCandidateResult {
+        final Map<Integer, List<Roi>> roisByLabel;
+        final Map<Integer, Long> voxelCounts;
+        final double voxelVolume;
+
+        SeedEditCandidateResult(Map<Integer, List<Roi>> roisByLabel,
+                                Map<Integer, Long> voxelCounts,
+                                double voxelVolume) {
+            this.roisByLabel = roisByLabel != null ? roisByLabel : Collections.emptyMap();
+            this.voxelCounts = voxelCounts != null ? voxelCounts : Collections.emptyMap();
+            this.voxelVolume = voxelVolume > 0 ? voxelVolume : 1.0;
         }
     }
 

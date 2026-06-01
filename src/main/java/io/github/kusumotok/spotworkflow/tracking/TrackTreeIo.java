@@ -154,7 +154,7 @@ public final class TrackTreeIo {
     }
 
     private static String resultObjName(TrackTree.ObjNode obj) {
-        return obj.getGlobalId() + "__result";
+        return objName(obj);
     }
 
     public static String sourceObjId(int t, Path source) {
